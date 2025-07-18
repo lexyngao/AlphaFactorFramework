@@ -32,11 +32,9 @@ private:
     // 全局临时存储（按股票拆分，避免混合存储导致的锁竞争）
     std::unordered_map<std::string, std::vector<OrderData>> stock_orders_;  // key: 股票代码
     std::unordered_map<std::string, std::vector<TradeData>> stock_trades_;  // key: 股票代码
-    std::mutex data_mutex_;  // 保护临时数据的互斥锁
 
     // 指标和因子容器
     std::unordered_map<std::string, std::shared_ptr<Indicator>> indicators_;  // key: 指标名
-    mutable std::mutex indicators_mutex_;  // 保护indicators_的锁
     std::vector<std::shared_ptr<Factor>> factors_;
 
     // 存储股票列表
@@ -54,10 +52,8 @@ private:
     std::atomic<bool> timer_running_{true};
     uint64_t time_interval_ms_;  // 因子计算触发间隔（毫秒）
 
-    std::atomic<size_t> total_tasks_{0};    // 已提交的总任务数
-    std::atomic<size_t> completed_tasks_{0};  // 已完成的任务数
 
-    std::atomic<bool> is_paused_{false};  // 新增：线程池暂停标志
+
 
     // 辅助函数：加载单只股票的历史指标数据
     void load_historical_data(const std::string& stock_code, BaseSeriesHolder& holder) {
@@ -72,10 +68,9 @@ private:
                 std::unique_lock<std::mutex> lock(queue_mutex_);
                 // 等待任务或退出信号
                 task_cond_.wait(lock, [this]() {
-                    return !is_running_ || (is_paused_ == false && !task_queue_.empty());
+                    return !is_running_ || !task_queue_.empty();
                 });
                 if (!is_running_ && task_queue_.empty()) break;
-                if (is_paused_) continue;  // 若暂停，继续等待
 
                 task = std::move(task_queue_.front());
                 task_queue_.pop();
@@ -100,17 +95,12 @@ private:
     // 新增：独立的任务创建函数（处理单只股票的指标计算）
     void submit_indicator_calculation(const SyncTickData& sync_tick) {
         std::lock_guard<std::mutex> lock(queue_mutex_);
-        total_tasks_++;
         task_queue_.push([this, sync_tick]() {
-            FinalAction on_exit([this]() { completed_tasks_++; });
-
+            FinalAction on_exit([this]() {  });
             try {
-                // 调用指标的try_calculate，内部判断是否需要计算
                 for (auto& [ind_name, indicator] : indicators_) {
-                    indicator->try_calculate(sync_tick); // 核心修改：通过try_calculate触发
+                    indicator->try_calculate(sync_tick); // 只需调用，不用管step
                 }
-                spdlog::info("[指标计算] 股票{}处理完成，订单: {}条，成交: {}条",
-                             sync_tick.symbol, sync_tick.orders.size(), sync_tick.trans.size());
             } catch (const std::exception& e) {
                 spdlog::error("[指标计算] 股票{}失败: {}", sync_tick.symbol, e.what());
             }
@@ -121,36 +111,8 @@ private:
 public:
     const GlobalConfig& config_;
 
-    size_t get_total_tasks() const { return total_tasks_; }
-    size_t get_completed_tasks() const { return completed_tasks_; }
 
-    // 新增：暂停线程池（等待所有当前任务完成）
-    void pause() {
-        spdlog::info("[开始暂停]");
 
-        // 等待队列清空且所有任务完成（复用已有计数器）
-        while (!is_task_queue_empty() || get_completed_tasks() != get_total_tasks()) {
-            // 每1秒输出一次状态（避免日志刷屏）
-            static auto last_log_time = std::chrono::steady_clock::now();
-            auto now = std::chrono::steady_clock::now();
-            if (now - last_log_time > std::chrono::seconds(1)) {
-                spdlog::info("[暂停中] 任务队列是否为空: {}, 总任务数: {}, 已完成: {}",
-                             is_task_queue_empty() ? "是" : "否",
-                             get_total_tasks(),
-                             get_completed_tasks());
-                last_log_time = now;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        is_paused_ = true;
-        spdlog::info("[暂停完成] 所有任务已处理，线程池进入暂停状态");
-    }
-
-    // 新增：恢复线程池
-    void resume() {
-        is_paused_ = false;
-        task_cond_.notify_all();  // 唤醒所有等待的工作线程
-    }
 
     std::shared_ptr<Indicator> get_indicator(const std::string& name) const {
         std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -200,7 +162,6 @@ public:
 
     // 初始化所有指标的存储（调用每个Indicator自己的init_storage）
     void init_indicator_storage(const std::vector<std::string>& stock_list) {
-        std::lock_guard<std::mutex> lock(indicators_mutex_);  // 保护indicators_
         stock_list_ = stock_list;  // 保留股票列表供其他逻辑使用
 
         // 遍历所有注册的指标，初始化它们各自的存储
@@ -235,14 +196,12 @@ public:
 
     // 处理订单（按股票缓存）
     void onOrder(const OrderData& order) {
-        std::lock_guard<std::mutex> lock(data_mutex_);
         stock_orders_[order.symbol].push_back(order);
         spdlog::debug("[订单] {} 累计: {}条", order.symbol, stock_orders_[order.symbol].size());
     }
 
     // 处理成交（按股票缓存）
     void onTrade(const TradeData& trade) {
-        std::lock_guard<std::mutex> lock(data_mutex_);
         stock_trades_[trade.symbol].push_back(trade);
         spdlog::debug("[成交] {} 累计: {}条", trade.symbol, stock_trades_[trade.symbol].size());
     }
@@ -253,7 +212,7 @@ public:
         std::vector<OrderData> orders;
         std::vector<TradeData> trades;
         {
-            std::lock_guard<std::mutex> lock(data_mutex_);
+
             if (stock_orders_.count(tick.symbol)) {
                 orders = std::move(stock_orders_[tick.symbol]);
                 stock_orders_[tick.symbol].clear();
@@ -318,11 +277,7 @@ public:
         }
     }
 
-    // 检查任务队列是否为空
-    bool is_task_queue_empty() const {
-        std::lock_guard<std::mutex> lock(queue_mutex_);
-        return task_queue_.empty();
-    }
+
 };
 
 #endif // ALPHAFACTORFRAMEWORK_CAL_ENGINE_H

@@ -60,52 +60,13 @@ int main() {
 
         // 3. 初始化计算引擎
         CalculationEngine engine(config);
+        // 4.注册Indicator指标(和Factor因子)
+        auto volume_indicator = std::make_shared<VolumeIndicator>(); // 15S频率
+        engine.add_indicator("volume", volume_indicator);
+        spdlog::info("指标注册完成");
         engine.init_indicator_storage(stock_list);
         spdlog::info("计算引擎初始化完成");
 
-        // 4. 注册Indicator指标(和Factor因子)
-        auto volume_indicator = std::make_shared<VolumeIndicator>();
-        engine.add_indicator("volume_indicator", volume_indicator);
-
-        spdlog::info("指标注册完成");
-
-
-//        /*加载多日数据*/
-//
-//        // 存储多日指标数据的容器（日期 -> BaseSeriesHolder智能指针）
-//        std::unordered_map<std::string, std::unique_ptr<BaseSeriesHolder>> multi_day_data;
-//
-//        // 找到与volume_indicator对应的模块配置（从config.modules中匹配）
-//        ModuleConfig volume_module;
-//        bool found = false;
-//        for (const auto& module : config.modules) {
-//            if (module.name == "volume_indicator" && module.handler == "Indicator") {
-//                volume_module = module;
-//                found = true;
-//                break;
-//            }
-//        }
-//        if (!found) {
-//            throw std::runtime_error("未找到volume_indicator的模块配置");
-//        }
-//
-//        // 加载多日指标数据（T-pre_days ~ T日）
-//        if (!ResultStorage::load_multi_day_indicators(
-//                volume_indicator,       // 目标指标
-//                volume_module,          // 模块配置
-//                config,                 // 全局配置（含pre_days和calculate_date）
-//                multi_day_data          // 输出：多日数据容器
-//        )) {
-//            spdlog::warn("多日指标数据加载部分失败，但继续执行");
-//        } else {
-//            spdlog::info("多日指标数据加载完成，共{}个交易日", multi_day_data.size());
-//        }
-//
-//        // 验证历史数据加载结果（可选）
-//        std::string hist_date = get_prev_date(config.calculate_date, 1); // T-1日
-//        if (multi_day_data.count(hist_date)) {
-//            spdlog::info("验证T-1日[{}]数据加载成功", hist_date);
-//        }
 
 
         // 5. 加载并排序当日行情数据
@@ -137,14 +98,6 @@ int main() {
         }
         spdlog::info("当日行情数据处理完成");
 
-        // 关键：暂停线程池，确保所有任务完成且线程进入idle状态
-        spdlog::info("等待所有计算任务完成并暂停线程池...");
-        engine.pause();  // 此调用会阻塞，直到所有任务完成
-        spdlog::info("所有计算任务已完成，线程池已暂停");
-
-        // 此时已回到单线程状态（工作线程均已暂停），可安全验证
-        // 强制刷新默认日志器的缓冲区
-        spdlog::default_logger()->flush();
 
         // 9. 验证指标计算结果
         // 验证300693.SZ的指标数据
@@ -153,7 +106,7 @@ int main() {
             BaseSeriesHolder* holder = volume_indicator->get_bar_series_holder("300693.SZ");
             if (holder) {
                 // 读取指标数据（指标名应为VolumeIndicator的name_，而非硬编码）
-                GSeries volume_series = holder->his_slice_bar("volume_indicator", 5);
+                GSeries volume_series = holder->his_slice_bar("volume", 5);
                 if (volume_series.is_valid(0)) {  // 检查索引有效性
                     double volume_930 = volume_series.get(0);
                     spdlog::info("300693.SZ 9:30-9:35 成交量: {}", volume_930);

@@ -19,7 +19,7 @@ public:
     BaseSeriesHolder* get_bar_series_holder(const std::string& stock_code) const;
 
 private:
-    int cal_time_bucket_ns(uint64_t total_ns);
+
 
 
 

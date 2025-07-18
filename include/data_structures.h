@@ -316,25 +316,22 @@ private:
     std::string stock;  // 股票代码
     // 结构：indicator_name -> 日期索引（T-5=0,...,T=5）-> GSeries
     std::unordered_map<std::string, std::unordered_map<int, GSeries>> HisBarSeries;
-    mutable std::unique_ptr<std::mutex> m_mutex; // 用于线程同步的互斥锁成员，可以移动
 
 public:
     // 1. 构造函数（初始化智能指针）
     explicit BaseSeriesHolder(std::string stock_code)
-            : stock(std::move(stock_code)), m_mutex(std::make_unique<std::mutex>()) {}
+            : stock(std::move(stock_code)) {}
 
     // 2. 移动构造函数（允许对象移动）
     BaseSeriesHolder(BaseSeriesHolder&& other) noexcept
             : stock(std::move(other.stock)),
-              HisBarSeries(std::move(other.HisBarSeries)),
-              m_mutex(std::move(other.m_mutex)) {}  // 移动智能指针
+              HisBarSeries(std::move(other.HisBarSeries)) {}  // 移动智能指针
 
     // 3. 移动赋值运算符（允许对象移动赋值）
     BaseSeriesHolder& operator=(BaseSeriesHolder&& other) noexcept {
         if (this != &other) {
             stock = std::move(other.stock);
             HisBarSeries = std::move(other.HisBarSeries);
-            m_mutex = std::move(other.m_mutex);  // 移动智能指针
         }
         return *this;
     }
@@ -370,8 +367,13 @@ public:
     // 获取股票代码
     const std::string& get_stock() const { return stock; }
 
-    std::mutex& get_mutex() {
-        return *m_mutex;
+    // 新增：获取所有indicator key
+    std::vector<std::string> get_all_indicator_keys() const {
+        std::vector<std::string> keys;
+        for (const auto& kv : HisBarSeries) {
+            keys.push_back(kv.first);
+        }
+        return keys;
     }
 };
 
@@ -400,27 +402,47 @@ enum class Frequency {
     F30MIN  // 30分钟
 };
 
-// 指标类：依赖Tick数据计算，结果存储在BaseSeriesHolder
 class Indicator {
 protected:
     std::string name_;          // 指标名称（如"volume"）
     std::string id_;            // 类名（如"VolumeIndicator"）
     std::string path_;          // 持久化基础路径
     Frequency frequency_;       // 更新频率
+    int step_ = 1; // 步长，默认每个bar都输出
+    int bars_per_day_ = 960; // 默认15s
+
+    void init_frequency_params() {
+        switch (frequency_) {
+            case Frequency::F15S:
+                step_ = 1;
+                bars_per_day_ = 960;
+                break;
+            case Frequency::F1MIN:
+                step_ = 4;
+                bars_per_day_ = 240;
+                break;
+            case Frequency::F5MIN:
+                step_ = 20;
+                bars_per_day_ = 48;
+                break;
+            case Frequency::F30MIN:
+                step_ = 120;
+                bars_per_day_ = 8;
+                break;
+        }
+    }
+
     // 关键修改：用unique_ptr自动管理BaseSeriesHolder的生命周期
     std::unordered_map<std::string, std::unique_ptr<BaseSeriesHolder>> storage_;
-    mutable std::mutex storage_mutex_;  // 保护indicator_storage_的锁
 
     std::unordered_map<std::string, uint64_t> last_calculation_time_; // 股票->上次计算时间（纳秒）
 
-    void update_last_calculation_time(const std::string& stock, uint64_t current_time) {
-        std::lock_guard<std::mutex> lock(storage_mutex_);
-        last_calculation_time_[stock] = current_time;
-    }
 
 public:
     Indicator(std::string name, std::string id, std::string path, Frequency freq)
-            : name_(std::move(name)), id_(std::move(id)), path_(std::move(path)), frequency_(freq) {}
+            : name_(std::move(name)), id_(std::move(id)), path_(std::move(path)), frequency_(freq) {
+        init_frequency_params();
+    }
 
     virtual ~Indicator()=default;
 
@@ -450,7 +472,6 @@ public:
 
     // 初始化指标存储（预创建所有股票的BaseSeriesHolder）
     void init_storage(const std::vector<std::string>& stock_list) {
-        std::lock_guard<std::mutex> lock(storage_mutex_);
         storage_.clear();  // 清空原有存储
 
         for (const auto& stock : stock_list) {
@@ -473,40 +494,58 @@ public:
 
     // 新增：尝试计算（内部判断频率，解耦engine）
     void try_calculate(const SyncTickData& sync_tick) {
-        const std::string& stock = sync_tick.symbol;
-        uint64_t current_time = sync_tick.local_time_stamp; // 使用syncTick的本地时间戳
-
-        // 1. 检查是否达到计算频率
-        if (!should_calculate(stock, current_time)) {
-            return; // 未到频率，不计算
-        }
-
-        // 2. 执行计算（调用子类实现的Calculate）
         Calculate(sync_tick);
-
-        // 3. 更新上次计算时间
-        update_last_calculation_time(stock, current_time);
     }
 
-    // 频率判断逻辑（保护成员，可被子类重写）
-    virtual bool should_calculate(const std::string& stock, uint64_t current_time) {
-        std::lock_guard<std::mutex> lock(storage_mutex_);
-        uint64_t last_time = last_calculation_time_[stock];
-        uint64_t interval = get_frequency_interval(); // 转换频率为纳秒间隔
-        return current_time - last_time >= interval;
-    }
 
-    // 辅助函数：将Frequency转换为纳秒间隔
-    uint64_t get_frequency_interval() const {
-        switch (frequency_) {
-            case Frequency::F15S:  return 15'000'000'000ULL;  // 15秒
-            case Frequency::F1MIN:  return 60'000'000'000ULL;  // 1分钟
-            case Frequency::F5MIN:  return 300'000'000'000ULL; // 5分钟
-            case Frequency::F30MIN: return 1'800'000'000'000ULL; // 30分钟
-            default: return 0;
+
+
+    // 统一的时间桶索引计算
+    int get_time_bucket_index(uint64_t total_ns) const {
+        if (total_ns == 0) return -1;
+
+        // 1. 转换为北京时间
+        int64_t utc_sec = total_ns / 1000000000;
+        int64_t beijing_sec = utc_sec;
+        int64_t beijing_seconds_in_day = beijing_sec % 86400;
+        int hour = static_cast<int>(beijing_seconds_in_day / 3600);
+        int minute = static_cast<int>((beijing_seconds_in_day % 3600) / 60);
+        int second = static_cast<int>(beijing_seconds_in_day % 60);
+        int total_minutes = hour * 60 + minute;
+
+        // 交易时间
+        const int morning_start = 9 * 60 + 30;   // 9:30
+        const int morning_end = 11 * 60 + 30;    // 11:30
+        const int afternoon_start = 13 * 60;     // 13:00
+        const int afternoon_end = 15 * 60;       // 15:00
+
+        bool is_morning = (total_minutes >= morning_start && total_minutes < morning_end);
+        bool is_afternoon = (total_minutes >= afternoon_start && total_minutes < afternoon_end);
+        if (!is_morning && !is_afternoon) return -1;
+
+        int seconds_since_open = 0;
+        if (is_morning) {
+            seconds_since_open = (total_minutes - morning_start) * 60 + second;
+        } else {
+            seconds_since_open = (morning_end - morning_start) * 60 // 上午总秒数
+                                + (total_minutes - afternoon_start) * 60 + second;
         }
+
+        int bucket_len = 15; // 默认15s
+        switch (frequency_) {
+            case Frequency::F15S: bucket_len = 15; break;
+            case Frequency::F1MIN: bucket_len = 60; break;
+            case Frequency::F5MIN: bucket_len = 300; break;
+            case Frequency::F30MIN: bucket_len = 1800; break;
+        }
+        int ti = seconds_since_open / bucket_len;
+        if (ti < 0 || ti >= bars_per_day_) return -1;
+        return ti;
     }
 
+    int get_step() const { return step_; }
+    int get_bars_per_day() const { return bars_per_day_; }
+    Frequency get_frequency() const { return frequency_; }
 };
 
 // 因子类：依赖Indicator结果计算，结果存储在factor_storage

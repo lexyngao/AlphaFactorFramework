@@ -62,29 +62,15 @@ public:
             std::map<int, std::map<std::string, double>> bar_data;  // bar_index -> {股票 -> 数值}
             int max_bar_index = -1;
 
-            // 遍历指标存储的所有股票数据
+            // 遍历Indicator的storage_，遍历所有key
             for (const auto& [stock_code, holder_ptr] : indicator_storage) {
-                if (!holder_ptr) {
-                    spdlog::warn("股票[{}]的BaseSeriesHolder为空，跳过", stock_code);
-                    continue;
-                }
-                const BaseSeriesHolder* holder = holder_ptr.get();  // 获取智能指针管理的原始指针
-
-                // 读取该股票在T日（index=5）的指标数据
-                GSeries series = holder->his_slice_bar(module.name, 5);  // module.name与存储时的指标名一致
-                if (series.empty()) {
-                    spdlog::warn("股票[{}]的指标[{}]无有效数据，跳过", stock_code, module.name);
-                    continue;
-                }
-
-                // 收集每个时间桶（ti）的数据
-                for (int ti = 0; ti < series.get_size(); ++ti) {
-                    if (series.is_valid(ti)) {  // 仅收集有效数据
-                        bar_data[ti][stock_code] = series.get(ti);
-                        if (ti > max_bar_index) {
-                            max_bar_index = ti;  // 更新最大bar索引
-                        }
-                    }
+                if (!holder_ptr) continue;
+                const BaseSeriesHolder* holder = holder_ptr.get();
+                for (const auto& key : holder->get_all_indicator_keys()) {
+                    // 你可以通过 holder->his_slice_bar(key, 5) 获取 GSeries
+                    GSeries series = holder->his_slice_bar(key, 5);
+                    // 按 key 存储，比如文件名加 key 后缀
+                    // save_to_file(key, series, ...);
                 }
             }
 
