@@ -62,15 +62,16 @@ public:
             std::map<int, std::map<std::string, double>> bar_data;  // bar_index -> {股票 -> 数值}
             int max_bar_index = -1;
 
-            // 遍历Indicator的storage_，遍历所有key
+            // 遍历每只股票
             for (const auto& [stock_code, holder_ptr] : indicator_storage) {
                 if (!holder_ptr) continue;
                 const BaseSeriesHolder* holder = holder_ptr.get();
-                for (const auto& key : holder->get_all_indicator_keys()) {
-                    // 你可以通过 holder->his_slice_bar(key, 5) 获取 GSeries
-                    GSeries series = holder->his_slice_bar(key, 5);
-                    // 按 key 存储，比如文件名加 key 后缀
-                    // save_to_file(key, series, ...);
+                GSeries series = holder->get_today_series(module.name);
+                int series_size = series.get_size();
+                for (int ti = 0; ti < series_size; ++ti) {
+                    double value = series.get(ti);
+                    bar_data[ti][stock_code] = value;
+                    if (ti > max_bar_index) max_bar_index = ti;
                 }
             }
 
@@ -421,8 +422,8 @@ private:
                 series.resize(max_bar_index + 1);  // 确保序列长度覆盖所有bar_index
             }
             // 调用公有方法set_his_series，避免访问私有成员HisBarSeries
-            // 假设his_day_index=0对应历史数据（根据实际逻辑调整）
-            out_holder.set_his_series(indicator_name, 0, series);
+            // 假设his_day_index=5对应历史数据（根据实际逻辑调整）
+            out_holder.set_his_series(indicator_name, 5, series);
         }
 
         return true;

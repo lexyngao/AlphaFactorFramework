@@ -1,8 +1,8 @@
 <Tsaigu>
     <Universe calculate_date="20240701" stock_universe="1800" pre_days="0"/>
     <Modules>
-        <Module handler="Indicator" name="volume_indicator" id="indicator_id"
-                path="data/indicator" frequency="5min"/>
+        <Module handler="Indicator" name="volume" id="indicator_id"
+                path="data/indicator" frequency="15S"/>
         <Module handler="Factor" name="factor_name" id="factor_id" path="/dat/factor"
                 frequency="5min"/>
     </Modules>

@@ -25,7 +25,7 @@ std::string get_prev_date(const std::string& date, int n) {
 // 辅助函数：从股票池文件读取指定交易日的股票列表
 std::vector<std::string> load_stock_list(const std::string& universe_name, const std::string& trading_day) {
     std::vector<std::string> stock_list;
-    std::string filename = fmt::format("stock_universe/{}_{}.txt", universe_name, trading_day);
+    std::string filename = fmt::format("data/stock_universe/{}_{}.txt", universe_name, trading_day);
     std::ifstream file(filename);
     if (!file.is_open()) {
         spdlog::error("无法读取股票池文件: {}", filename);

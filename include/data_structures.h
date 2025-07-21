@@ -11,6 +11,7 @@
 #include <vector>
 #include "spdlog/spdlog.h"
 #include <memory>
+#include "config.h"
 
 
 // 存储计算结果的序列（PDF 1.3节）
@@ -314,8 +315,9 @@ struct MarketAllField {
 class BaseSeriesHolder {  // PDF中为BaseSeriesHolder，修正类名对齐
 private:
     std::string stock;  // 股票代码
-    // 结构：indicator_name -> 日期索引（T-5=0,...,T=5）-> GSeries
+    // 结构：indicator_name -> 日期索引（T-5=1,...,T-1=pre_days）-> GSeries
     std::unordered_map<std::string, std::unordered_map<int, GSeries>> HisBarSeries;
+
 
 public:
     // 1. 构造函数（初始化智能指针）
@@ -444,6 +446,18 @@ public:
         init_frequency_params();
     }
 
+    // 新增：支持通过ModuleConfig直接初始化
+    Indicator(const ModuleConfig& module)
+            : name_(module.name), id_(module.id), path_(module.path), frequency_([](const std::string& freq_str) {
+        if (freq_str == "15S" || freq_str == "15s") return Frequency::F15S;
+        if (freq_str == "1min") return Frequency::F1MIN;
+        if (freq_str == "5min") return Frequency::F5MIN;
+        if (freq_str == "30min") return Frequency::F30MIN;
+        return Frequency::F15S; // 默认
+    }(module.frequency)) {
+        init_frequency_params();
+    }
+
     virtual ~Indicator()=default;
 
     // 纯虚函数：计算指标（由子类实现具体逻辑）
@@ -546,6 +560,18 @@ public:
     int get_step() const { return step_; }
     int get_bars_per_day() const { return bars_per_day_; }
     Frequency get_frequency() const { return frequency_; }
+
+    // 新增：写入T日数据到storage_
+    void set_bar_series(const std::string& stock, const std::string& indicator_name, const GSeries& series) {
+        auto it = storage_.find(stock);
+        if (it == storage_.end() || !it->second) {
+            // 如果没有对应股票的holder，则新建
+            storage_[stock] = std::make_unique<BaseSeriesHolder>(stock);
+            it = storage_.find(stock);
+        }
+        // T日一般用his_day_index=0
+        it->second->set_his_series(indicator_name, 0, series);
+    }
 };
 
 // 因子类：依赖Indicator结果计算，结果存储在factor_storage

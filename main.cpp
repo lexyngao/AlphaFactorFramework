@@ -6,6 +6,9 @@
 #include "spdlog/sinks/basic_file_sink.h"
 #include <chrono>
 #include <stdexcept>
+#include <unordered_map>
+#include <sstream>
+#include <iomanip>
 
 using namespace std::chrono;
 
@@ -60,97 +63,148 @@ int main() {
 
         // 3. 初始化计算引擎
         CalculationEngine engine(config);
-        // 4.注册Indicator指标(和Factor因子)
-        auto volume_indicator = std::make_shared<VolumeIndicator>(); // 15S频率
-        engine.add_indicator("volume", volume_indicator);
+
+        // 4. 注册Indicator指标(和Factor因子)
+        std::unordered_map<std::string, std::shared_ptr<Indicator>> indicator_map;
+        for (const auto& module : config.modules) {
+            if (module.handler == "Indicator") {
+                // 这里只实现VolumeIndicator，实际可根据module.id扩展
+                auto indicator = std::make_shared<VolumeIndicator>();
+                engine.add_indicator(module.name, indicator);
+                indicator_map[module.name] = indicator;
+                spdlog::info("已注册Indicator: {}", module.name);
+            }
+        }
         spdlog::info("指标注册完成");
         engine.init_indicator_storage(stock_list);
         spdlog::info("计算引擎初始化完成");
 
-
-
-        // 5. 加载并排序当日行情数据
-        std::vector<MarketAllField> all_tick_datas;
-        for (const auto& stock : stock_list) {
-            std::vector<MarketAllField> stock_data = data_loader.load_stock_data_to_Market(stock, config.calculate_date);
-            all_tick_datas.insert(all_tick_datas.end(), stock_data.begin(), stock_data.end());
-        }
-        data_loader.sort_market_datas(all_tick_datas);
-        spdlog::info("加载当日行情数据完成，共{}条记录", all_tick_datas.size());
-
-        // 6. 打印尾部N条数据校验
-        int N = 5;
-        if (all_tick_datas.size() >= N) {
-            int start_idx = all_tick_datas.size() - N;
-            spdlog::info("查看尾部{}条数据（索引{}到{}）：", N, start_idx, all_tick_datas.size()-1);
-            for (int i = start_idx; i < all_tick_datas.size(); ++i) {
-                const auto& data = all_tick_datas[i];
-                spdlog::info("索引{}: 时间={}, 股票={}",
-                             i,
-                             convert_ns_to_beijing_time(data.timestamp),
-                             data.symbol);
+        // 5. 尝试加载已有indicator历史数据（T日和T-pre_days~T-1）
+        bool skip_calculation = false;
+        for (const auto& module : config.modules) {
+            if (module.handler == "Indicator") {
+                auto indicator_it = indicator_map.find(module.name);
+                if (indicator_it == indicator_map.end()) continue;
+                auto indicator = indicator_it->second;
+                std::unordered_map<std::string, std::unique_ptr<BaseSeriesHolder>> multi_day_storage;
+                bool loaded = ResultStorage::load_multi_day_indicators(
+                    indicator, module, config, multi_day_storage
+                );
+                if (loaded) {
+                    spdlog::info("模块[{}]的indicator历史数据加载成功", module.name);
+                    // T日数据
+                    auto it_T = multi_day_storage.find(config.calculate_date);
+                    if (it_T != multi_day_storage.end() && it_T->second) {
+                        for (const auto& stock : stock_list) {
+                            GSeries series = it_T->second->his_slice_bar(module.name, 5);
+                            auto holder_it = indicator->get_storage().find(stock);
+                            if (holder_it != indicator->get_storage().end() && holder_it->second) {
+                                holder_it->second->set_his_series(module.name, 5, series);
+                            }
+                        }
+                        skip_calculation = true;
+                        spdlog::info("T日[{}]的indicator数据已存在，跳过后续行情数据处理", config.calculate_date);
+                    }
+//                     历史数据
+                    for (int i = 1; i <= config.pre_days; ++i) {
+                        std::string hist_date = get_prev_date(config.calculate_date, i);
+                        auto it_hist = multi_day_storage.find(hist_date);
+                        if (it_hist != multi_day_storage.end() && it_hist->second) {
+                            for (const auto& stock : stock_list) {
+                                int bars_per_day = indicator->get_bars_per_day();
+                                GSeries series = it_hist->second->his_slice_bar(module.name, bars_per_day);
+                                auto holder_it = indicator->get_storage().find(stock);
+                                if (holder_it != indicator->get_storage().end() && holder_it->second) {
+                                    holder_it->second->set_his_series(module.name, i, series);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    spdlog::info("模块[{}]的indicator历史数据不存在，将进行正常计算", module.name);
+                }
             }
         }
 
-        // 7. 处理行情数据（触发指标计算）
-        for (const auto& field : all_tick_datas) {
-            engine.update(field);  // 统一分发到onOrder/onTrade/onTick
-        }
-        spdlog::info("当日行情数据处理完成");
+        // 6. 加载并排序当日行情数据
+        std::vector<MarketAllField> all_tick_datas;
+        if (!skip_calculation) {
+            for (const auto& stock : stock_list) {
+                std::vector<MarketAllField> stock_data = data_loader.load_stock_data_to_Market(stock, config.calculate_date);
+                all_tick_datas.insert(all_tick_datas.end(), stock_data.begin(), stock_data.end());
+            }
+            data_loader.sort_market_datas(all_tick_datas);
+            spdlog::info("加载当日行情数据完成，共{}条记录", all_tick_datas.size());
 
-
-        // 9. 验证指标计算结果
-        // 验证300693.SZ的指标数据
-        if (std::find(stock_list.begin(), stock_list.end(), "300693.SZ") != stock_list.end()) {
-            // 从Indicator的storage_中获取holder
-            BaseSeriesHolder* holder = volume_indicator->get_bar_series_holder("300693.SZ");
-            if (holder) {
-                // 读取指标数据（指标名应为VolumeIndicator的name_，而非硬编码）
-                GSeries volume_series = holder->his_slice_bar("volume", 5);
-                if (volume_series.is_valid(0)) {  // 检查索引有效性
-                    double volume_930 = volume_series.get(0);
-                    spdlog::info("300693.SZ 9:30-9:35 成交量: {}", volume_930);
-                } else {
-                    spdlog::warn("300693.SZ 在ti=0处无有效数据");
+            // 7. 打印尾部N条数据校验
+            int N = 5;
+            if (all_tick_datas.size() >= N) {
+                int start_idx = all_tick_datas.size() - N;
+                spdlog::info("查看尾部{}条数据（索引{}到{}）：", N, start_idx, all_tick_datas.size()-1);
+                for (int i = start_idx; i < all_tick_datas.size(); ++i) {
+                    const auto& data = all_tick_datas[i];
+                    spdlog::info("索引{}: 时间={}, 股票={}",
+                                 i,
+                                 convert_ns_to_beijing_time(data.timestamp),
+                                 data.symbol);
                 }
-            } else {
-                spdlog::warn("300693.SZ 未在VolumeIndicator中找到存储");
+            }
+
+            // 8. 处理行情数据（触发指标计算）
+            for (const auto& field : all_tick_datas) {
+                engine.update(field);  // 统一分发到onOrder/onTrade/onTick
+            }
+            spdlog::info("当日行情数据处理完成");
+        }
+
+        // 9. 验证指标计算结果（以第一个indicator为例）
+        if (!indicator_map.empty()) {
+            const auto& first_pair = *indicator_map.begin();
+            auto indicator = first_pair.second;
+            if (std::find(stock_list.begin(), stock_list.end(), "300693.SZ") != stock_list.end()) {
+                BaseSeriesHolder* holder = nullptr;
+                auto& storage = indicator->get_storage();
+                auto it = storage.find("300693.SZ");
+                if (it != storage.end() && it->second) {
+                    holder = it->second.get();
+                }
+                if (holder) {
+                    GSeries volume_series = holder->his_slice_bar(indicator->name(), 5);
+                    if (volume_series.is_valid(0)) {
+                        double volume_930 = volume_series.get(0);
+                        spdlog::info("300693.SZ 9:30-9:35 成交量: {}", volume_930);
+                    } else {
+                        spdlog::warn("300693.SZ 在ti=0处无有效数据");
+                    }
+                } else {
+                    spdlog::warn("300693.SZ 未在Indicator中找到存储");
+                }
             }
         }
 
         // 10. 保存计算结果
-        // 9. 保存结果（按每个模块配置处理，严格匹配ModuleConfig）
         for (const auto& module : config.modules) {
             spdlog::info("开始保存模块[{}]的计算结果（类型：{}）", module.name, module.handler);
-
             if (module.handler == "Indicator") {
-                // 保存指标结果：使用模块配置中的路径和名称
-                if (!ResultStorage::save_indicator(volume_indicator, module, config.calculate_date)) {
-                    spdlog::error("模块[{}]指标结果保存失败", module.name);
-                } else {
-                    spdlog::info("模块[{}]指标结果已保存至: {}", module.name, module.path);
+                auto indicator_it = indicator_map.find(module.name);
+                if (indicator_it != indicator_map.end()) {
+                    if (!ResultStorage::save_indicator(indicator_it->second, module, config.calculate_date)) {
+                        spdlog::error("模块[{}]指标结果保存失败", module.name);
+                    } else {
+                        spdlog::info("模块[{}]指标结果已保存至: {}", module.name, module.path);
+                    }
                 }
             }
-//            else if (module.handler == "Factor") {
-//                // 保存因子结果：使用模块配置中的路径和名称
-//                if (!ResultStorage::save_factor(engine, module, config.calculate_date)) {
-//                    spdlog::error("模块[{}]因子结果保存失败", module.name);
-//                } else {
-//                    spdlog::info("模块[{}]因子结果已保存至: {}", module.name, module.path);
-//                }
-//            }
+            // else if (module.handler == "Factor") { ... }
             else {
                 spdlog::warn("忽略未知模块类型: {}", module.handler);
             }
         }
-
         spdlog::info("结果保存完成");
-
     } catch (const std::exception& e) {
         spdlog::critical("程序异常终止: {}", e.what());
         return 1;
     }
-
     spdlog::info("=== 框架运行完成 ===");
     return 0;
 }
