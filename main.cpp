@@ -86,40 +86,13 @@ int main() {
                 auto indicator_it = indicator_map.find(module.name);
                 if (indicator_it == indicator_map.end()) continue;
                 auto indicator = indicator_it->second;
-                std::unordered_map<std::string, std::unique_ptr<BaseSeriesHolder>> multi_day_storage;
                 bool loaded = ResultStorage::load_multi_day_indicators(
-                    indicator, module, config, multi_day_storage
+                    indicator, module, config
                 );
                 if (loaded) {
                     spdlog::info("模块[{}]的indicator历史数据加载成功", module.name);
-                    // T日数据
-                    auto it_T = multi_day_storage.find(config.calculate_date);
-                    if (it_T != multi_day_storage.end() && it_T->second) {
-                        for (const auto& stock : stock_list) {
-                            GSeries series = it_T->second->his_slice_bar(module.name, 5);
-                            auto holder_it = indicator->get_storage().find(stock);
-                            if (holder_it != indicator->get_storage().end() && holder_it->second) {
-                                holder_it->second->set_his_series(module.name, 5, series);
-                            }
-                        }
-                        skip_calculation = true;
-                        spdlog::info("T日[{}]的indicator数据已存在，跳过后续行情数据处理", config.calculate_date);
-                    }
-//                     历史数据
-                    for (int i = 1; i <= config.pre_days; ++i) {
-                        std::string hist_date = get_prev_date(config.calculate_date, i);
-                        auto it_hist = multi_day_storage.find(hist_date);
-                        if (it_hist != multi_day_storage.end() && it_hist->second) {
-                            for (const auto& stock : stock_list) {
-                                int bars_per_day = indicator->get_bars_per_day();
-                                GSeries series = it_hist->second->his_slice_bar(module.name, bars_per_day);
-                                auto holder_it = indicator->get_storage().find(stock);
-                                if (holder_it != indicator->get_storage().end() && holder_it->second) {
-                                    holder_it->second->set_his_series(module.name, i, series);
-                                }
-                            }
-                        }
-                    }
+                    skip_calculation = true;
+                    spdlog::info("T日[{}]的indicator数据已存在，跳过后续行情数据处理", config.calculate_date);
                 } else {
                     spdlog::info("模块[{}]的indicator历史数据不存在，将进行正常计算", module.name);
                 }

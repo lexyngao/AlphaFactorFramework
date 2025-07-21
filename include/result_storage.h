@@ -66,7 +66,7 @@ public:
             for (const auto& [stock_code, holder_ptr] : indicator_storage) {
                 if (!holder_ptr) continue;
                 const BaseSeriesHolder* holder = holder_ptr.get();
-                GSeries series = holder->get_today_series(module.name);
+                GSeries series = holder->his_slice_bar(module.name, 5); // T日索引写死为5
                 int series_size = series.get_size();
                 for (int ti = 0; ti < series_size; ++ti) {
                     double value = series.get(ti);
@@ -138,9 +138,7 @@ public:
     static bool load_multi_day_indicators(
             const std::shared_ptr<Indicator>& indicator,
             const ModuleConfig& module,
-            const GlobalConfig& global_config,
-            // 容器值类型为智能指针
-            std::unordered_map<std::string, std::unique_ptr<BaseSeriesHolder>>& multi_day_storage
+            const GlobalConfig& global_config
     ) {
         const std::string& T_date = global_config.calculate_date;
         const int pre_days = global_config.pre_days;
@@ -153,9 +151,9 @@ public:
             return false;
         }
 
-        // 步骤2：检查并加载T日指标（传入智能指针容器）
+        // 步骤2：加载T日数据
         bool T_exists = load_single_day_indicator(
-                indicator, module, T_date, T_stock_list, multi_day_storage
+            indicator, module, T_date, T_stock_list
         );
         if (T_exists) {
             spdlog::info("T日[{}]指标已存在，直接复用", T_date);
@@ -167,59 +165,67 @@ public:
         for (int i = 1; i <= pre_days; ++i) {
             std::string hist_date = get_prev_date(T_date, i);
             spdlog::info("开始加载历史日期[{}]的指标数据", hist_date);
-
             std::vector<std::string> hist_stock_list = load_stock_list(universe, hist_date);
             std::unordered_map<std::string, GSeries> hist_raw_data;
-
             if (!load_historical_indicator_data(indicator, module, hist_date, hist_raw_data)) {
                 spdlog::warn("历史日期[{}]指标数据不存在，跳过", hist_date);
                 continue;
             }
-
-            // 步骤4：重索引并存储（使用智能指针）
-            auto reindexed_holder = std::make_unique<BaseSeriesHolder>("multi_day_" + hist_date);
-            reindex_historical_data(
-                    hist_raw_data, T_stock_list, hist_stock_list,
-                    module.name, indicator->frequency(), *reindexed_holder
-            );
-
-            // 正确移动智能指针到容器
-            multi_day_storage[hist_date] = std::move(reindexed_holder);
+            // 步骤4：重索引并存储到indicator->get_storage()
+            for (const auto& stock : T_stock_list) {
+                GSeries series;
+                if (hist_raw_data.count(stock)) {
+                    series = hist_raw_data.at(stock);
+                } else {
+                    // 不存在的股票用NAN填充
+                    int bar_count = 0;
+                    if (!hist_stock_list.empty() && hist_raw_data.count(hist_stock_list[0])) {
+                        bar_count = hist_raw_data.at(hist_stock_list[0]).get_size();
+                    }
+                    for (int k = 0; k < bar_count; ++k) {
+                        series.push(NAN);
+                    }
+                }
+                auto holder_it = indicator->get_storage().find(stock);
+                if (holder_it != indicator->get_storage().end() && holder_it->second) {
+                    holder_it->second->set_his_series(module.name, pre_days - i, series);
+                }
+            }
             spdlog::info("历史日期[{}]指标重索引完成", hist_date);
         }
-
         return true;
     }
 
+
+// 子函数1：加载单一日指标，直接写入indicator->get_storage()
+static bool load_single_day_indicator(
+        const std::shared_ptr<Indicator>& indicator,
+        const ModuleConfig& module,
+        const std::string& date,
+        const std::vector<std::string>& T_stock_list
+) {
+    fs::path file_path = fs::path(module.path) / date / module.frequency /
+                         fmt::format("{}_{}_{}.csv.gz", module.name, date, module.frequency);
+    if (!fs::exists(file_path)) {
+        return false;
+    }
+    // 解析文件到stock->GSeries
+    std::unordered_map<std::string, GSeries> stock_series;
+    if (!parse_indicator_gz_to_map(file_path, module.name, date, T_stock_list, stock_series)) {
+        spdlog::error("解析T日[{}]指标文件失败", date);
+        return false;
+    }
+    // 直接写入indicator的存储结构
+    for (const auto& stock : T_stock_list) {
+        auto holder_it = indicator->get_storage().find(stock);
+        if (holder_it != indicator->get_storage().end() && holder_it->second) {
+            holder_it->second->set_his_series(module.name, 5, stock_series[stock]);
+        }
+    }
+    return true;
+}
 
 private:
-    // 子函数1：加载单一日指标（返回是否存在）
-    static bool load_single_day_indicator(
-            const std::shared_ptr<Indicator>& indicator,
-            const ModuleConfig& module,
-            const std::string& date,
-            const std::vector<std::string>& T_stock_list,
-            // 容器类型改为智能指针
-            std::unordered_map<std::string, std::unique_ptr<BaseSeriesHolder>>& storage
-    ) {
-        // 构建文件路径
-        fs::path file_path = fs::path(module.path) / date / module.frequency /
-                             fmt::format("{}_{}_{}.csv.gz", module.name, date, module.frequency);
-        if (!fs::exists(file_path)) {
-            return false;  // 文件不存在
-        }
-
-        // 解析文件到临时holder对象
-        BaseSeriesHolder temp_holder("T_day_" + date);
-        if (!parse_indicator_gz(file_path, module.name, date, T_stock_list, temp_holder)) {
-            spdlog::error("解析T日[{}]指标文件失败", date);
-            return false;
-        }
-
-        // 关键：通过移动构造创建智能指针并存储（避免复制）
-        storage[date] = std::make_unique<BaseSeriesHolder>(std::move(temp_holder));
-        return true;
-    }
 
     // 子函数2：加载历史指标原始数据（未重索引）
     static bool load_historical_indicator_data(
@@ -349,12 +355,12 @@ private:
     }
 
     // 解析函数
-    static bool parse_indicator_gz(
+    static bool parse_indicator_gz_to_map(
             const fs::path& file_path,
             const std::string& indicator_name,
             const std::string& date,
             const std::vector<std::string>& T_stock_list,
-            BaseSeriesHolder& out_holder
+            std::unordered_map<std::string, GSeries>& stock_series
     ) {
         gzFile gz_file = gzopen(file_path.string().c_str(), "rb");
         if (!gz_file) {
@@ -380,7 +386,6 @@ private:
         }
 
         // 2. 解析数据行，构建GSeries（按股票维度）
-        std::unordered_map<std::string, GSeries> stock_series;  // 股票->GSeries
         int max_bar_index = -1;
 
         // 初始化每个股票的GSeries（先预留空间）
@@ -423,7 +428,7 @@ private:
             }
             // 调用公有方法set_his_series，避免访问私有成员HisBarSeries
             // 假设his_day_index=5对应历史数据（根据实际逻辑调整）
-            out_holder.set_his_series(indicator_name, 5, series);
+            // out_holder.set_his_series(indicator_name, 5, series); // This line is removed as per new_code
         }
 
         return true;
