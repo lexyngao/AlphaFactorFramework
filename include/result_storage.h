@@ -62,13 +62,16 @@ public:
             std::map<int, std::map<std::string, double>> bar_data;  // bar_index -> {股票 -> 数值}
             int max_bar_index = -1;
 
-            // 遍历每只股票
+            int bars_per_day = indicator->get_bars_per_day();
             for (const auto& [stock_code, holder_ptr] : indicator_storage) {
                 if (!holder_ptr) continue;
                 const BaseSeriesHolder* holder = holder_ptr.get();
-                GSeries series = holder->his_slice_bar(module.name, 5); // T日索引写死为5
-                int series_size = series.get_size();
-                for (int ti = 0; ti < series_size; ++ti) {
+                GSeries series = holder->his_slice_bar(module.name, 5); // T日索引
+                // 确保series长度和bars_per_day一致
+                if (series.get_size() < bars_per_day) {
+                    series.resize(bars_per_day);
+                }
+                for (int ti = 0; ti < bars_per_day; ++ti) {
                     double value = series.get(ti);
                     bar_data[ti][stock_code] = value;
                     if (ti > max_bar_index) max_bar_index = ti;

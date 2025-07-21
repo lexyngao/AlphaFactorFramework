@@ -14,7 +14,7 @@ class VolumeIndicator : public Indicator {
 public:
     // 让VolumeIndicator支持ModuleConfig构造
     explicit VolumeIndicator(const ModuleConfig& module) : Indicator(module) {}
-    VolumeIndicator();  // 构造函数声明
+//    VolumeIndicator();  // 构造函数声明
 
     // 重写计算接口
     void Calculate(const SyncTickData& tick_data) override;

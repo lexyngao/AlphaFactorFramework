@@ -441,12 +441,7 @@ protected:
 
 
 public:
-    Indicator(std::string name, std::string id, std::string path, Frequency freq)
-            : name_(std::move(name)), id_(std::move(id)), path_(std::move(path)), frequency_(freq) {
-        init_frequency_params();
-    }
-
-    // 新增：支持通过ModuleConfig直接初始化
+    // 修改：通过ModuleConfig的参数初始化
     Indicator(const ModuleConfig& module)
             : name_(module.name), id_(module.id), path_(module.path), frequency_([](const std::string& freq_str) {
         if (freq_str == "15S" || freq_str == "15s") return Frequency::F15S;

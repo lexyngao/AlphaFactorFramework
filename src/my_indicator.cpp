@@ -8,8 +8,8 @@
 #include "spdlog/spdlog.h"
 
 // 成交量指标实现
-VolumeIndicator::VolumeIndicator()
-    : Indicator("volume", "VolumeIndicator", "/data/indicators", Frequency::F15S) {}
+//VolumeIndicator::VolumeIndicator()
+//    : Indicator("volume", "VolumeIndicator", "/data/indicators", Frequency::F15S) {}
 
 void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
     auto thread_id = std::this_thread::get_id();
