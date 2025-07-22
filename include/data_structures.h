@@ -382,6 +382,9 @@ public:
 // Factor基类（PDF 3.4节）
 class BaseFactor {
 public:
+    BaseFactor() = default;
+    BaseFactor(const std::string& name, const std::string& id, const std::string& path)
+        : name_(name), id_(id), path_(path) {}
     virtual ~BaseFactor() = default;  // 确保多态析构
 
     // 计算因子（输入：所有股票的Indicator数据、排序后的股票列表、时间bar索引ti）
@@ -393,6 +396,11 @@ public:
         spdlog::critical("BaseFactor::definition not implemented for factor");
         return GSeries();
     }
+
+protected:
+    std::string name_;
+    std::string id_;
+    std::string path_;
 };
 
 //indicator类
@@ -515,7 +523,8 @@ public:
 
         // 1. 转换为北京时间
         int64_t utc_sec = total_ns / 1000000000;
-        int64_t beijing_sec = utc_sec;
+        // 修复：total_ns已经是UTC时间，需要加上8小时转换为北京时间
+        int64_t beijing_sec = utc_sec + 8 * 3600;  // UTC + 8小时 = 北京时间
         int64_t beijing_seconds_in_day = beijing_sec % 86400;
         int hour = static_cast<int>(beijing_seconds_in_day / 3600);
         int minute = static_cast<int>((beijing_seconds_in_day % 3600) / 60);

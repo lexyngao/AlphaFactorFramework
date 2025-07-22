@@ -51,7 +51,7 @@ private:
 
 
     // 解析格式："YYYY-MM-DD HH:MM:SS.fffffffff"（9位小数，纳秒级）
-    // 返回：从1970-01-01 00:00:00 BTC开始的总纳秒数（uint64_t）
+    // 返回：从1970-01-01 00:00:00 UTC开始的总纳秒数（uint64_t）
     static uint64_t parse_datetime_ns(const std::string& datetime_str) {
         try {
             // 分割日期时间部分和纳秒部分（.后的9位）
@@ -87,7 +87,6 @@ private:
                 ns = std::stoull(ns_part);
             }
 
-
             // 解析日期时间到秒级
             std::istringstream iss(dt_part);
             date::sys_time<std::chrono::seconds> tp;  // 秒级时间点
@@ -96,18 +95,23 @@ private:
                 spdlog::error("日期时间解析失败，格式应为YYYY-MM-DD HH:MM:SS，字符串：{}", dt_part);
                 return 0;
             }
-
+            
             // 解析纳秒部分（0-999999999）
-//            uint64_t ns = std::stoull(ns_part);
             if (ns > 999999999) {
                 spdlog::error("纳秒值超出范围（必须≤999999999），值：{}", ns);
                 return 0;
             }
-
+            
             // 计算总纳秒数（epoch到当前时间的纳秒）
             auto sec_since_epoch = std::chrono::duration_cast<std::chrono::seconds>(
                     tp.time_since_epoch()
             ).count();
+            
+            // 修复：输入的时间是北京时间，但date::parse解析为UTC时间
+            // 所以我们需要将北京时间转换为UTC时间
+            // 北京时间 = UTC + 8小时，所以 UTC = 北京时间 - 8小时
+            sec_since_epoch -= 8 * 3600;  // 减去8小时得到UTC时间
+            
             uint64_t total_ns = sec_since_epoch * 1000000000ULL + ns;  // 秒→纳秒 + 剩余纳秒
 
             return total_ns;
