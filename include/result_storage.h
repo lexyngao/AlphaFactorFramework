@@ -228,6 +228,113 @@ static bool load_single_day_indicator(
     return true;
 }
 
+// 保存单个因子模块的结果（从Factor自身的factor_storage读取数据）
+static bool save_factor(
+        const std::shared_ptr<Factor>& factor,  // 目标因子实例
+        const ModuleConfig& module,
+        const std::string& date
+) {
+    try {
+        // 1. 验证参数有效性
+        if (!factor) {
+            spdlog::error("保存失败：因子实例为空");
+            return false;
+        }
+        if (module.handler != "Factor") {
+            spdlog::error("模块[{}]不是Factor类型", module.name);
+            return false;
+        }
+        if (module.path.empty() || module.name.empty()) {
+            spdlog::error("模块[{}]路径或名称为空", module.name);
+            return false;
+        }
+
+        // 2. 创建存储目录
+        fs::path base_path = fs::path(module.path) / date / "5min";
+        if (!fs::exists(base_path) && !fs::create_directories(base_path)) {
+            spdlog::error("创建目录失败: {}", base_path.string());
+            return false;
+        }
+
+        // 3. 从Factor的factor_storage中收集数据
+        const auto& factor_storage = factor->get_storage();
+        if (factor_storage.empty()) {
+            spdlog::warn("因子[{}]的factor_storage为空，无数据可保存", module.name);
+            return true;
+        }
+
+        // 4. 生成GZ压缩文件（格式：因子名_日期_5min.csv.gz）
+        std::string filename = fmt::format("{}_{}_5min.csv.gz", module.name, date);
+        fs::path file_path = base_path / filename;
+
+        // 5. 写入GZ文件
+        gzFile gz_file = gzopen(file_path.string().c_str(), "wb");
+        if (!gz_file) {
+            spdlog::error("无法创建GZ文件: {}", file_path.string());
+            return false;
+        }
+
+        // 5.1 写入表头（bar_index + 所有股票代码）
+        std::string header = "bar_index";
+        // 从第一个时间桶的数据中获取股票列表
+        std::vector<std::string> stock_list;
+        if (!factor_storage.empty()) {
+            const auto& first_bar_data = factor_storage.begin()->second;
+            if (!first_bar_data.empty()) {
+                const auto& first_factor_data = first_bar_data.begin()->second;
+                // 从GSeries中获取股票数量（假设GSeries的size就是股票数量）
+                int stock_count = first_factor_data.get_size();
+                for (int i = 0; i < stock_count; ++i) {
+                    stock_list.push_back("stock_" + std::to_string(i));  // 临时股票代码
+                }
+            }
+        }
+
+        for (const auto& stock_code : stock_list) {
+            header += "," + stock_code;
+        }
+        header += "\n";
+        gzwrite(gz_file, header.data(), header.size());
+
+        // 5.2 按bar_index写入每行数据
+        for (const auto& [bar_index, factor_data] : factor_storage) {
+            std::string line = std::to_string(bar_index);  // 行首为bar_index
+
+            // 获取该时间桶的因子数据
+            auto factor_it = factor_data.find(module.name);
+            if (factor_it != factor_data.end()) {
+                const GSeries& series = factor_it->second;
+                // 为每个股票填充对应bar的数据
+                for (int i = 0; i < series.get_size(); ++i) {
+                    double value = series.get(i);
+                    if (std::isnan(value)) {
+                        line += ",";  // 无数据（留空）
+                    } else {
+                        line += fmt::format(",{:.6f}", value);  // 有数据
+                    }
+                }
+            } else {
+                // 该时间桶没有该因子的数据，填充空值
+                for (size_t i = 0; i < stock_list.size(); ++i) {
+                    line += ",";
+                }
+            }
+            line += "\n";
+            gzwrite(gz_file, line.data(), line.size());
+        }
+
+        // 6. 关闭文件并输出日志
+        gzclose(gz_file);
+        spdlog::info("因子[{}]数据保存成功：{}（{}个时间桶）",
+                     module.name, file_path.string(), factor_storage.size());
+        return true;
+
+    } catch (const std::exception& e) {
+        spdlog::error("保存因子[{}]失败：{}", module.name, e.what());
+        return false;
+    }
+}
+
 private:
 
     // 子函数2：加载历史指标原始数据（未重索引）
@@ -436,6 +543,7 @@ private:
 
         return true;
     }
+
 };
 
 

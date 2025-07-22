@@ -172,7 +172,7 @@ struct SyncTickData {
 };
 
 // 用于排序的统一数据结构
-enum class MarketBufferType { Order, Trade, Tick };
+enum class MarketBufferType { Order, Trade, Tick, Time };
 
 struct MarketAllField {
     MarketBufferType type;          // 数据类型
@@ -183,6 +183,7 @@ struct MarketAllField {
         OrderData order;
         TradeData trade;
         TickData tick;
+        uint64_t time_trigger;  // Time类型的时间戳
     };
 
     // 1. 默认构造函数（必须显式定义）
@@ -206,6 +207,9 @@ struct MarketAllField {
             case MarketBufferType::Tick:
                 new(&tick) TickData();
                 break;
+            case MarketBufferType::Time:
+                time_trigger = ts;  // 直接赋值时间戳
+                break;
         }
     }
 
@@ -223,6 +227,9 @@ struct MarketAllField {
                 break;
             case MarketBufferType::Tick:
                 new(&tick) TickData(other.tick);
+                break;
+            case MarketBufferType::Time:
+                time_trigger = other.time_trigger;
                 break;
         }
     }
@@ -242,6 +249,9 @@ struct MarketAllField {
             case MarketBufferType::Tick:
                 new(&tick) TickData(std::move(other.tick));
                 break;
+            case MarketBufferType::Time:
+                time_trigger = other.time_trigger;
+                break;
         }
     }
 
@@ -257,6 +267,9 @@ struct MarketAllField {
                 break;
             case MarketBufferType::Tick:
                 tick.~TickData();
+                break;
+            case MarketBufferType::Time:
+                // Time类型不需要析构
                 break;
         }
     }
@@ -281,6 +294,9 @@ struct MarketAllField {
                     break;
                 case MarketBufferType::Tick:
                     new(&tick) TickData(other.tick);
+                    break;
+                case MarketBufferType::Time:
+                    time_trigger = other.time_trigger;
                     break;
             }
         }
@@ -307,6 +323,13 @@ struct MarketAllField {
             throw std::logic_error("MarketAllField类型错误：当前不是Tick类型");
         }
         return tick;
+    }
+
+    uint64_t get_time_trigger() const {
+        if (type != MarketBufferType::Time) {
+            throw std::logic_error("MarketAllField类型错误：当前不是Time类型");
+        }
+        return time_trigger;
     }
 
 };
@@ -393,9 +416,14 @@ public:
             const std::vector<std::string>& sorted_stock_list,
             int ti
     ) {
-        spdlog::critical("BaseFactor::definition not implemented for factor");
+        spdlog::critical("BaseFactor::definition not implement yet!!");
         return GSeries();
     }
+
+    // 获取因子名称
+    const std::string& get_name() const { return name_; }
+    const std::string& get_id() const { return id_; }
+    const std::string& get_path() const { return path_; }
 
 protected:
     std::string name_;
@@ -597,6 +625,21 @@ public:
     // 纯虚函数：计算因子（由子类实现具体逻辑，依赖Indicator结果）
     virtual void Calculate(const std::vector<const Indicator*>& indicators) = 0;
 
+    // 新增：definition方法，用于计算因子
+    virtual GSeries definition(
+            const std::unordered_map<std::string, BaseSeriesHolder*>& bar_runners,
+            const std::vector<std::string>& sorted_stock_list,
+            int ti
+    ) {
+        spdlog::critical("Factor::definition not implement yet!!");
+        return GSeries();
+    }
+
+    // 新增：设置因子计算结果
+    void set_factor_result(int ti, const GSeries& result) {
+        factor_storage[ti][name_] = result;
+    }
+
     // 获取完整存储路径（path/date/5min/name.gz）
     std::string get_full_storage_path(const std::string& date) const {
         return path_ + "/" + date + "/5min/" + name_ + ".gz";
@@ -604,6 +647,10 @@ public:
 
     // 获取因子名称
     const std::string& name() const { return name_; }
+    const std::string& get_name() const { return name_; }
+    const std::string& get_id() const { return id_; }
+    const std::string& get_path() const { return path_; }
+    
     // 获取存储结构
     const std::map<int, std::map<std::string, GSeries>>& get_storage() const {
         return factor_storage;

@@ -239,20 +239,53 @@ public:
 
     // 时间触发因子计算
     void onTime() {
-        std::vector<const Indicator*> ready_indicators;
+        // 获取所有Indicator的存储数据
+        std::unordered_map<std::string, BaseSeriesHolder*> bar_runners;
         {
-            std::lock_guard<std::mutex> lock(queue_mutex_);  // 避免并发修改indicators_
-            for (const auto& [name, ind] : indicators_) {
-                ready_indicators.push_back(ind.get());
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            for (const auto& [name, indicator] : indicators_) {
+                const auto& storage = indicator->get_storage();
+                for (const auto& [stock, holder] : storage) {
+                    bar_runners[stock] = holder.get();
+                }
             }
+        }
+
+        // 计算当前时间桶索引
+        // 我们需要从当前处理的Time事件中获取时间戳来计算正确的时间桶
+        // 由于onTime没有时间戳参数，我们需要通过其他方式获取
+        int ti = -1;
+        
+        // 方法：从第一个Factor的频率来计算当前应该处理的时间桶
+        if (!factors_.empty()) {
+            // Factor固定为5min频率，我们需要计算当前是第几个5min时间桶
+            // 这里需要根据实际的时间来计算，暂时使用一个递增的计数器
+            static int time_bucket_counter = 0;
+            ti = time_bucket_counter;
+            time_bucket_counter++;
+        }
+
+        if (ti < 0) {
+            spdlog::warn("无法计算时间桶索引，跳过因子计算");
+            return;
         }
 
         // 提交因子计算任务
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
             for (auto& factor : factors_) {
-                task_queue_.push([factor, ready_indicators]() {
-                    factor->Calculate(ready_indicators);
+                task_queue_.push([this, factor, bar_runners, ti]() {
+                    try {
+                        // 调用因子的definition函数
+                        GSeries result = factor->definition(bar_runners, stock_list_, ti);
+                        
+                        // 将结果存储到factor的存储结构中
+                        factor->set_factor_result(ti, result);
+                        
+                        spdlog::debug("因子[{}]计算完成，时间桶: {}", factor->get_name(), ti);
+                    } catch (const std::exception& e) {
+                        spdlog::error("因子[{}]计算失败: {}", factor->get_name(), e.what());
+                    }
                 });
             }
         }
@@ -272,8 +305,11 @@ public:
             case MarketBufferType::Tick:
                 onTick(field.get_tick());
                 break;
+            case MarketBufferType::Time:
+                onTime();
+                break;
             default:
-                spdlog::warn("未知数据类型");
+                spdlog::warn("未知数据类型: {}", static_cast<int>(field.type));
         }
     }
 

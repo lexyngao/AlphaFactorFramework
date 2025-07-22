@@ -1,4 +1,5 @@
 #include "Framework.h"
+#include "config.h"
 #include "spdlog/sinks/basic_file_sink.h"
 #include <chrono>
 #include <stdexcept>
@@ -25,7 +26,7 @@ int main() {
 
         // 3. 初始化Framework
         Framework framework(config);
-        framework.register_indicators(config.modules);
+        framework.register_indicators_factors(config.modules);
         framework.load_all_indicators();
 
         // 4. 加载并排序行情数据
