@@ -20,7 +20,8 @@ add_executable(AlphaFactorFramework main.cpp
         src/tinyxml2.cpp
         src/tz.cpp
         src/my_indicator.cpp
-        src/my_factor.cpp)
+        src/my_factor.cpp
+        src/gseries_impl.cpp)
 
 # 链接库
 #target_link_libraries(AlphaFactorFramework PRIVATE tinyxml2 ZLIB::ZLIB spdlog::spdlog)

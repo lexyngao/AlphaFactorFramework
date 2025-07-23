@@ -113,7 +113,12 @@ public:
                     if (bar_it != bar_data.end()) {
                         auto stock_it = bar_it->second.find(stock_code);
                         if (stock_it != bar_it->second.end()) {
-                            line += fmt::format(",{:.6f}", stock_it->second);  // 有数据
+                            double value = stock_it->second;
+                            if (std::isnan(value)) {
+                                line += ",";  // NaN值留空
+                            } else {
+                                line += fmt::format(",{:.6f}", value);  // 有数据
+                            }
                         } else {
                             line += ",";  // 无数据（留空）
                         }
@@ -232,7 +237,8 @@ static bool load_single_day_indicator(
 static bool save_factor(
         const std::shared_ptr<Factor>& factor,  // 目标因子实例
         const ModuleConfig& module,
-        const std::string& date
+        const std::string& date,
+        const std::vector<std::string>& stock_list  // 股票列表
 ) {
     try {
         // 1. 验证参数有效性
@@ -276,19 +282,7 @@ static bool save_factor(
 
         // 5.1 写入表头（bar_index + 所有股票代码）
         std::string header = "bar_index";
-        // 从第一个时间桶的数据中获取股票列表
-        std::vector<std::string> stock_list;
-        if (!factor_storage.empty()) {
-            const auto& first_bar_data = factor_storage.begin()->second;
-            if (!first_bar_data.empty()) {
-                const auto& first_factor_data = first_bar_data.begin()->second;
-                // 从GSeries中获取股票数量（假设GSeries的size就是股票数量）
-                int stock_count = first_factor_data.get_size();
-                for (int i = 0; i < stock_count; ++i) {
-                    stock_list.push_back("stock_" + std::to_string(i));  // 临时股票代码
-                }
-            }
-        }
+        // 使用传入的股票列表
 
         for (const auto& stock_code : stock_list) {
             header += "," + stock_code;

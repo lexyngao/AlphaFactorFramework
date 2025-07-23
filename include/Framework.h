@@ -98,7 +98,7 @@ public:
             } else if (module.handler == "Factor") {
                 auto it = factor_map_.find(module.name);
                 if (it != factor_map_.end()) {
-                    ResultStorage::save_factor(it->second, module, config_.calculate_date);
+                    ResultStorage::save_factor(it->second, module, config_.calculate_date, stock_list_);
                 }
             }
         }

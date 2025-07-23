@@ -12,41 +12,194 @@
 #include "spdlog/spdlog.h"
 #include <memory>
 #include "config.h"
+#include "factor_utils.h"
+#include "compute_utils.h"
+#include "increasing.h"
+#include "rolling.h"
+#include <iomanip>
+#include <fstream>
+#include <queue>
+#include <limits>
 
 
 // 存储计算结果的序列（PDF 1.3节）
 class GSeries {
 private:
-    std::vector<double> d_vec;  // 每个时间bar的计算结果
-    // 总长度
-    int valid_num = 0;          // 有效值数量（非空值）
+    std::vector<double> d_vec;
+    int valid_num = 0;
+
+public:
+    int size = 0;
 
 public:
     GSeries() = default;
-    explicit GSeries(const std::vector<double>& vec) : d_vec(vec), size(vec.size()) {
-        valid_num = std::count_if(vec.begin(), vec.end(), [](double v) { return !std::isnan(v); });
+
+    GSeries(const GSeries &other) {
+        this->d_vec = other.d_vec;
+        this->size  = other.size;
+        this->valid_num = other.valid_num;
     }
 
-    // 添加值（自动更新size和valid_num）
-    void push(double value) {
-        d_vec.push_back(value);
-        size++;
-        if (!std::isnan(value)) valid_num++;
-    }
-
-    // 获取值（带边界检查）
-    double get(int idx) const {
-        if (idx < 0 || idx >= size) {
-            spdlog::error("GSeries index out of range: {} (size: {})", idx, size);
-            return std::nan("");
+    //重载=号运算符
+    GSeries& operator= (const GSeries &other){
+        if(this == &other){
+            return *this;
+        } else {
+            this->d_vec = other.d_vec;
+            this->size  = other.size;
+            this->valid_num = other.valid_num;
+            return *this;
         }
-        return d_vec[idx];
     }
 
-    bool is_valid(int idx) const {
-        if (idx < 0 || idx >= size) return false;  // 索引越界 → 无效
-        return !std::isnan(d_vec[idx]);            // 非NaN → 有效
+    explicit GSeries(const std::vector<double> & new_vec) {
+        this->d_vec = new_vec;
+        this->size = int(d_vec.size());
+        this->valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
     }
+
+    GSeries(int n, double val): d_vec(n, val) {
+        this->size = n;
+        this->valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
+    }
+
+    explicit GSeries(int n): d_vec(n, std::numeric_limits<double>::quiet_NaN()) {
+        this->size = n;
+        this->valid_num = 0;
+    }
+
+    void push(const double &_x) {
+        this->d_vec.push_back(_x);
+        this->size = int(d_vec.size());
+        if (!std::isnan(_x)) valid_num++;
+    }
+
+    bool empty() const{
+        return d_vec.empty();}
+
+    void to_csv(const std::string & out_file, const std::vector<std::string> & alia_index) const{
+        std::ofstream outfile(out_file, std::ios::trunc);
+        for (int i=0;i<size;i++){
+            outfile << alia_index[i] << "," << std::setprecision(10) << d_vec[i] << "\n";
+        }
+    }
+
+    void to_csv(const std::string & out_file) const{
+        std::ofstream outfile(out_file, std::ios::trunc);
+        for (int i=0;i<size;i++){
+            outfile << std::setprecision(10) << d_vec[i] << "\n";
+        }
+    }
+
+    void read_csv(const std::string & out_file){
+        std::ifstream infile(out_file);
+        std::string line;
+        while(std::getline(infile, line)){
+            d_vec.push_back(std::stod(line));
+        }
+        size = int(d_vec.size());
+        valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
+    }
+
+    std::vector<double> vec() const{
+        return d_vec;}
+
+    double back() const{
+        if (d_vec.empty()) return std::numeric_limits<double>::quiet_NaN();
+        else return d_vec.back();
+    }
+
+    double back_default(const double & d) const{
+        if (d_vec.empty()) {
+            return std::numeric_limits<double>::quiet_NaN();
+        } else {
+            double back_val = d_vec.back();
+            if (std::isfinite(back_val)){
+                return back_val;
+            } else {
+                return d;
+            }
+        }
+    }
+
+    double front() const{
+        if (d_vec.empty()) return std::numeric_limits<double>::quiet_NaN();
+        else return d_vec[0];
+    }
+
+    double first_valid() const{
+        double first_val = std::numeric_limits<double>::quiet_NaN();
+        for (const auto & d : d_vec)
+            if (std::isfinite(d)) {
+                first_val = d;
+                break;
+            }
+        return first_val;
+    }
+
+    double last_valid() const{
+        double last_valid_value = std::numeric_limits<double>::quiet_NaN();
+        for (int i=size-1;i>=0;i--){
+            if (std::isfinite(d_vec[i])) {
+                last_valid_value = d_vec[i];
+                break;
+            }
+        }
+        return last_valid_value;
+    }
+
+    void set_locate(int location, const double & set_value){
+        if (location >= size || location < 0) return;
+        bool was_valid = !std::isnan(d_vec[location]);
+        d_vec[location] = set_value;
+        bool is_valid = !std::isnan(set_value);
+        if (is_valid && !was_valid) valid_num++;
+        else if (!is_valid && was_valid) valid_num--;
+    }
+
+    void set_zero_nan_inplace(const double & eps){
+        for (auto & d : d_vec){
+            if (std::abs(d) < eps) d = std::numeric_limits<double>::quiet_NaN();
+        }
+        valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
+    }
+
+    void set_nan_if_less(const double & eps){
+        for (auto & d : d_vec)
+            if (d < eps) d = std::numeric_limits<double>::quiet_NaN();
+        valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
+    }
+
+    void set_nan_if_greater(const double & eps){
+        for (auto & d : d_vec)
+            if (d > eps) d = std::numeric_limits<double>::quiet_NaN();
+        valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
+    }
+
+    void set_nan_if_abs_zero(double eps=1e-8){
+        for (auto & d : d_vec)
+            if (std::isfinite(d) && std::abs(d) < eps) {
+                d = std::numeric_limits<double>::quiet_NaN();
+            }
+        valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
+    }
+
+    bool is_location_not_nan(const int & idx) const{
+        if (idx >= size || idx < 0){
+            spdlog::critical("series locate out of index");
+            return false;
+        } else {
+            return !std::isnan(d_vec[idx]);
+        }
+    }
+
+    // 兼容性方法
+    double get(int idx) const { return locate(idx); }
+    void set(int idx, double value) { set_locate(idx, value); }
+    bool is_valid(int idx) const { return is_location_not_nan(idx); }
+    const std::vector<double>& data() const { return d_vec; }
+    int get_size() const { return size; }
+    int get_valid_num() const { return valid_num; }
 
     // 重置数据（用于reindex）
     void reindex(const std::vector<std::string>& new_stock_list, const std::unordered_map<std::string, int>& old_index_map) {
@@ -56,7 +209,7 @@ public:
             if (old_index_map.count(stock)) {
                 new_d_vec.push_back(d_vec[old_index_map.at(stock)]);
             } else {
-                new_d_vec.push_back(std::nan(""));  // 缺失值用NaN填充（PDF要求）
+                new_d_vec.push_back(std::numeric_limits<double>::quiet_NaN());
             }
         }
         d_vec = new_d_vec;
@@ -64,46 +217,284 @@ public:
         valid_num = std::count_if(new_d_vec.begin(), new_d_vec.end(), [](double v) { return !std::isnan(v); });
     }
 
-    // getter
-    const std::vector<double>& data() const { return d_vec; }
-    int get_size() const { return size; }
-    int get_valid_num() const { return valid_num; }
-
-    // 判断是否为空（新增函数）
-    bool empty() const {
-        return size == 0 || d_vec.empty();  // 两种判断方式，确保准确性
-    }
-
-    // 设置指定索引的值（之前用到的set函数，新增）
-    void set(int idx, double value) {
-        if (idx < 0) {
-            spdlog::error("GSeries set index out of range: {}", idx);
-            return;
-        }
-        // 若索引超过当前size，扩容并填充NaN
-        if (idx >= size) {
-            int new_size = idx + 1;
-            d_vec.resize(new_size, std::nan(""));
-            size = new_size;
-        }
-        // 更新值
-        bool was_valid = !std::isnan(d_vec[idx]);
-        d_vec[idx] = value;
-        bool is_valid = !std::isnan(value);
-
-        // 更新valid_num
-        if (is_valid && !was_valid) valid_num++;
-        else if (!is_valid && was_valid) valid_num--;
-    }
-
-    // 调整大小（之前用到的resize函数，新增）
+    // 调整大小
     void resize(int new_size) {
         if (new_size <= size) return;
-        d_vec.resize(new_size, std::nan(""));
+        d_vec.resize(new_size, std::numeric_limits<double>::quiet_NaN());
         size = new_size;
+        valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
     }
 
-    int size = 0;
+    // 统计方法
+    double nansum() const;
+    double nansum(const int & head_num) const;
+    double nanmean() const;
+    double nanmean(const int & head_num) const;
+    double locate(const int & idx) const;
+    double r_locate(const int & idx) const;
+    double nanmedian() const;
+    double nanstd() const;
+    double skewness() const;
+    double kurtosis() const;
+    int count() const;
+    double max() const;
+    double min() const;
+    int argmax() const;
+    int argmin() const;
+    int length() const;
+    double corrwith(const GSeries &other) const;
+
+    void fillna_inplace(const double & f_val);
+    void ffill_inplace();
+
+    GSeries fillna(const double & f_val) const;
+    GSeries ffill() const;
+    GSeries nan_reduce_sort(const bool & reverse) const;
+
+    GSeries pos_shift(const int & n) const;
+    GSeries neg_shift(const int & n) const;
+
+    double nanquantile(const double & q) const;
+
+    double quantile(const double & q) const{
+        if (count() == size){
+            return nanquantile(q);
+        } else {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+    }
+
+    std::vector<double> nanquantile(const std::vector<double> & q_list) const;
+
+    std::vector<int> slice_idx_equal(const double & val) const;
+    std::vector<int> slice_idx_greater(const double & val) const;
+    std::vector<int> slice_idx_greater_equal(const double & val) const;
+    std::vector<int> slice_idx_less(const double & val) const;
+    std::vector<int> slice_idx_less_equal(const double & val) const;
+    std::vector<int> slice_idx_range(const double & lower, const double & upper) const;
+    std::vector<int> non_null_index() const; // select valid index
+
+    std::vector<int> null_index() const{
+        std::vector<int> null_idx;
+        for (int i=0;i<d_vec.size();i++){
+            if (!std::isfinite(d_vec[i])) {
+                null_idx.push_back(i);
+            }
+        }
+        return null_idx;
+    }
+
+    double slice_mean(const std::vector<int> & idx) const;
+    double slice_sum(const std::vector<int> & idx) const;
+
+    double slice_max(const std::vector<int> & idx) const;
+    double slice_min(const std::vector<int> & idx) const;
+    double slice_std(const std::vector<int> & idx) const;
+    GSeries slice(const std::vector<int> & idx) const;
+
+    GSeries cumsum() const;
+    GSeries cummax() const;
+    GSeries cummin() const;
+    double mode() const;
+    GSeries diff(const int & num, const bool & is_ffill) const;
+
+    GSeries z_score() const;
+    GSeries mean_fold(const bool & mean_first=true) const;
+
+    void mean_fold_inplace(const bool & mean_first=true);
+    void median_fold_inplace(const bool & mean_first=true);
+    void q75_fold_inplace(const bool & mean_first=true);
+
+    GSeries pct_change(const int & num, const bool & is_ffill) const;
+
+    GSeries pct_change(const int & limits) const;
+
+    GSeries rank(const bool & is_pct, const bool & is_ascending) const;
+
+    std::vector<int> arg_sort() const;
+
+    GSeries tail(const int & num) const;
+
+    GSeries tail_rn(const int & num) const;
+
+    GSeries head(const int & num) const;
+
+    GSeries head_rn(const int & num) const;
+
+    GSeries rolling_sum(const int & num, const int & min_period) const;
+
+    GSeries rolling_skew(const int & num) const;
+
+    GSeries rolling_kurt(const int & num) const;
+
+    GSeries rolling_max(const int & num) const;
+
+    GSeries rolling_min(const int & num) const;
+
+    GSeries rolling_mean(const int & num, const int & min_period) const;
+
+    GSeries rolling_median(const int & num) const;
+
+    GSeries rolling_std(const int & num, const int & min_period) const;
+
+    GSeries rolling_jump_min(const int & jump_num, const int & start_point) const;
+
+    GSeries rolling_jump_max(const int & jump_num, const int & start_point) const;
+
+    GSeries rolling_jump_last(const int & jump_num, const int & start_point) const;
+    GSeries rolling_jump_first(const int & jump_num, const int & start_point) const;
+
+    GSeries rolling_jump_sum(const int & jump_num, const int & start_point) const;
+
+    GSeries rolling_jump_mean(const int & jump_num, const int & start_point) const;
+
+    void append(const GSeries & other){
+        d_vec.insert(d_vec.end(), other.d_vec.begin(), other.d_vec.end());
+        size = int(d_vec.size());
+        valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
+    }
+
+    static GSeries concat(const GSeries & series1, const GSeries & series2){
+        std::vector<double> cnt(series1.d_vec);
+        cnt.insert(cnt.end(), series2.d_vec.begin(), series2.d_vec.end());
+        return GSeries(cnt);
+    }
+
+    GSeries neutralize(const GSeries &other) const; // neu = this - b * other
+
+    GSeries element_mul(const GSeries &other) const;
+    void element_mul_inplace(const GSeries &other);
+
+    GSeries element_div(const GSeries &other) const;
+    void element_div_inplace(const GSeries &other);
+
+    GSeries element_add(const GSeries &other) const;
+    void element_add_inplace(const GSeries &other);
+
+    GSeries element_sub(const GSeries &other) const;
+    void element_sub_inplace(const GSeries &other);
+
+    GSeries element_abs() const;
+    void element_abs_inplace();
+
+    GSeries element_pow(const double &_x) const;
+    void element_pow_inplace(const double &_x);
+
+    GSeries element_add(const double &_x) const;
+    void element_add_inplace(const double &_x);
+
+    GSeries element_sub(const double &_x) const;
+    void element_sub_inplace(const double &_x);
+
+    GSeries element_rsub(const double &_x) const;
+    void element_rsub_inplace(const double &_x);
+
+    GSeries element_div(const double &_x) const;
+    void element_div_inplace(const double &_x);
+
+    GSeries element_mul(const double &_x) const;
+    void element_mul_inplace(const double &_x);
+
+    GSeries element_rdiv(const double &_x) const;
+    void element_rdiv_inplace(const double &_x);
+
+    GSeries element_log() const{
+        std::vector<double> new_vec(size, 0);
+        for (int i=0;i<size;i++){
+            if (std::isfinite(d_vec[i]) && ComputeUtils::greater_than_zero(d_vec[i])) new_vec[i] = std::log(d_vec[i]);
+            else new_vec[i] = std::numeric_limits<double>::quiet_NaN();
+        }
+        return GSeries(new_vec);
+    }
+
+    void element_log_inplace(){
+        for (auto & d: d_vec){
+            if (std::isfinite(d) && ComputeUtils::greater_than_zero(d)) d = std::log(d);
+            else d = std::numeric_limits<double>::quiet_NaN();
+        }
+        valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
+    }
+
+    GSeries element_exp(){
+        std::vector<double> new_vec(size, 0);
+        for (int i=0;i<size;i++){
+            if (std::isfinite(d_vec[i])) new_vec[i] = std::exp(d_vec[i]);
+            else new_vec[i] = std::numeric_limits<double>::quiet_NaN();
+        }
+        return GSeries(new_vec);
+    }
+
+    void element_exp_inplace(){
+        for (auto & d: d_vec){
+            if (std::isfinite(d)) d = std::exp(d);
+            else d = std::numeric_limits<double>::quiet_NaN();
+        }
+        valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
+    }
+
+    static GSeries maximum(const GSeries &series1, const GSeries &series2){
+        int full_size = std::min(series1.size, series2.size);
+
+        std::vector<double> max_data;
+
+        for (int i=0;i< full_size;i++){
+            if (std::isfinite(series1.d_vec[i]) && std::isfinite(series2.d_vec[i])){
+                max_data.push_back(std::max(series1.d_vec[i], series2.d_vec[i]));
+            } else {
+                max_data.push_back(std::numeric_limits<double>::quiet_NaN());
+            }
+        }
+
+        return GSeries(max_data);
+    }
+
+    double max_draw_down() const{
+        double local_max = std::numeric_limits<double>::quiet_NaN();
+        double mdd = std::numeric_limits<double>::quiet_NaN();
+        for (const auto & d: d_vec){
+            if (std::isfinite(d)){
+                if (!std::isfinite(local_max)) local_max = d;
+                else local_max = std::max(local_max, d);
+                double draw_down = ComputeUtils::nan_divide(d, local_max);
+                if (!std::isfinite(mdd)) mdd = draw_down;
+                else mdd = std::min(mdd, draw_down);
+            }
+        }
+        return mdd;
+    }
+
+    double max_rise() const{
+        double local_min = std::numeric_limits<double>::quiet_NaN();
+        double m_rise = std::numeric_limits<double>::quiet_NaN();
+        for (const auto & d: d_vec){
+            if (std::isfinite(d)){
+                if (!std::isfinite(local_min)) local_min = d;
+                else local_min = std::min(local_min, d);
+
+                double mr = ComputeUtils::nan_divide(d, local_min);
+
+                if (!std::isfinite(m_rise)) m_rise = mr;
+                else m_rise = std::max(m_rise, mr);
+            }
+        }
+        return m_rise;
+    }
+    
+    static GSeries minimum(const GSeries &series1, const GSeries &series2) {
+        int full_size = std::min(series1.size, series2.size);
+
+        std::vector<double> min_data;
+
+        for (int i=0;i< full_size;i++){
+            if (std::isfinite(series1.d_vec[i]) && std::isfinite(series2.d_vec[i])){
+                min_data.push_back(std::min(series1.d_vec[i], series2.d_vec[i]));
+            } else {
+                min_data.push_back(std::numeric_limits<double>::quiet_NaN());
+            }
+        }
+
+        return GSeries(min_data);
+    }
 };
 
 // 订单数据（PDF 2.1节）
