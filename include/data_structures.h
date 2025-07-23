@@ -27,8 +27,6 @@ class GSeries {
 private:
     std::vector<double> d_vec;
     int valid_num = 0;
-
-public:
     int size = 0;
 
 public:
@@ -36,7 +34,7 @@ public:
 
     GSeries(const GSeries &other) {
         this->d_vec = other.d_vec;
-        this->size  = other.size;
+        this->size  = other.get_size();
         this->valid_num = other.valid_num;
     }
 
@@ -46,7 +44,7 @@ public:
             return *this;
         } else {
             this->d_vec = other.d_vec;
-            this->size  = other.size;
+            this->size  = other.get_size();
             this->valid_num = other.valid_num;
             return *this;
         }
@@ -80,14 +78,22 @@ public:
     void to_csv(const std::string & out_file, const std::vector<std::string> & alia_index) const{
         std::ofstream outfile(out_file, std::ios::trunc);
         for (int i=0;i<size;i++){
-            outfile << alia_index[i] << "," << std::setprecision(10) << d_vec[i] << "\n";
+            if (std::isnan(d_vec[i])) {
+                outfile << alia_index[i] << ",\n";
+            } else {
+                outfile << alia_index[i] << "," << std::setprecision(10) << d_vec[i] << "\n";
+            }
         }
     }
 
     void to_csv(const std::string & out_file) const{
         std::ofstream outfile(out_file, std::ios::trunc);
         for (int i=0;i<size;i++){
-            outfile << std::setprecision(10) << d_vec[i] << "\n";
+            if (std::isnan(d_vec[i])) {
+                outfile << "\n";
+            } else {
+                outfile << std::setprecision(10) << d_vec[i] << "\n";
+            }
         }
     }
 
@@ -433,7 +439,7 @@ public:
     }
 
     static GSeries maximum(const GSeries &series1, const GSeries &series2){
-        int full_size = std::min(series1.size, series2.size);
+        int full_size = std::min(series1.get_size(), series2.get_size());
 
         std::vector<double> max_data;
 
@@ -481,7 +487,7 @@ public:
     }
     
     static GSeries minimum(const GSeries &series1, const GSeries &series2) {
-        int full_size = std::min(series1.size, series2.size);
+        int full_size = std::min(series1.get_size(), series2.get_size());
 
         std::vector<double> min_data;
 
@@ -729,9 +735,15 @@ struct MarketAllField {
 class BaseSeriesHolder {  // PDF中为BaseSeriesHolder，修正类名对齐
 private:
     std::string stock;  // 股票代码
-    // 结构：indicator_name -> 日期索引（T-5=1,...,T-1=pre_days）-> GSeries
+    
+    // T日之前的历史数据：结构：indicator_name -> 日期索引（1=往前1日, 2=往前2日, ..., pre_days=往前pre_days日）-> GSeries
     std::unordered_map<std::string, std::unordered_map<int, GSeries>> HisBarSeries;
-
+    
+    // T日（今天）的数据：结构：indicator_name -> GSeries
+    std::unordered_map<std::string, GSeries> MBarSeries; // today m bar
+    
+    // 状态标志
+    bool status = false;
 
 public:
     // 1. 构造函数（初始化智能指针）
@@ -741,13 +753,17 @@ public:
     // 2. 移动构造函数（允许对象移动）
     BaseSeriesHolder(BaseSeriesHolder&& other) noexcept
             : stock(std::move(other.stock)),
-              HisBarSeries(std::move(other.HisBarSeries)) {}  // 移动智能指针
+              HisBarSeries(std::move(other.HisBarSeries)),
+              MBarSeries(std::move(other.MBarSeries)),
+              status(other.status) {}
 
     // 3. 移动赋值运算符（允许对象移动赋值）
     BaseSeriesHolder& operator=(BaseSeriesHolder&& other) noexcept {
         if (this != &other) {
             stock = std::move(other.stock);
             HisBarSeries = std::move(other.HisBarSeries);
+            MBarSeries = std::move(other.MBarSeries);
+            status = other.status;
         }
         return *this;
     }
@@ -757,6 +773,7 @@ public:
     BaseSeriesHolder& operator=(const BaseSeriesHolder&) = delete;
 
     // 设置历史序列（确保his_day_index>0，PDF 1.3节）
+    // 新的索引逻辑：1=往前1日, 2=往前2日, ..., pre_days=往前pre_days日
     void set_his_series(const std::string& indicator_name, int his_day_index, const GSeries& series) {
         if (his_day_index <= 0) {
             spdlog::error("{}: his_day_index must be > 0 (got {})", stock, his_day_index);
@@ -766,8 +783,8 @@ public:
     }
 
     // 获取历史序列片段（PDF 1.3节）
+    // 新的索引逻辑：1=往前1日, 2=往前2日, ..., pre_days=往前pre_days日
     GSeries his_slice_bar(const std::string& indicator_name, int his_day_index) const {
-
         if (!HisBarSeries.count(indicator_name)) {
             spdlog::error("{}: Indicator {} not found in HisBarSeries", stock, indicator_name);
             return GSeries();
@@ -780,6 +797,29 @@ public:
         return day_map.at(his_day_index);
     }
 
+    // 新增：设置T日（今天）的数据
+    void offline_set_m_bar(const std::string& factor_name, const GSeries& val) {
+        MBarSeries[factor_name] = val;
+        status = true;
+    }
+
+    // 新增：获取T日（今天）的数据
+    GSeries get_m_bar(const std::string& factor_name) const {
+        if (!MBarSeries.count(factor_name)) {
+            spdlog::error("{}: Factor {} not found in MBarSeries", stock, factor_name);
+            return GSeries();
+        }
+        return MBarSeries.at(factor_name);
+    }
+
+    // 新增：检查T日数据是否存在
+    bool has_m_bar(const std::string& factor_name) const {
+        return MBarSeries.count(factor_name) > 0;
+    }
+
+    // 新增：获取T日数据的状态
+    bool get_status() const { return status; }
+
     // 获取股票代码
     const std::string& get_stock() const { return stock; }
 
@@ -787,6 +827,15 @@ public:
     std::vector<std::string> get_all_indicator_keys() const {
         std::vector<std::string> keys;
         for (const auto& kv : HisBarSeries) {
+            keys.push_back(kv.first);
+        }
+        return keys;
+    }
+
+    // 新增：获取所有T日factor key
+    std::vector<std::string> get_all_m_bar_keys() const {
+        std::vector<std::string> keys;
+        for (const auto& kv : MBarSeries) {
             keys.push_back(kv.first);
         }
         return keys;

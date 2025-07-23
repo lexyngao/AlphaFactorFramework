@@ -33,14 +33,20 @@ public:
     }
 
     void load_all_indicators() {
+        spdlog::info("开始加载所有指标数据...");
         for (const auto& module : config_.modules) {
             if (module.handler == "Indicator") {
+                spdlog::info("处理指标模块: {}", module.name);
                 auto it = indicator_map_.find(module.name);
                 if (it != indicator_map_.end()) {
+                    spdlog::info("调用load_multi_day_indicators for {}", module.name);
                     ResultStorage::load_multi_day_indicators(it->second, module, config_);
+                } else {
+                    spdlog::error("未找到指标: {}", module.name);
                 }
             }
         }
+        spdlog::info("指标数据加载完成");
     }
 
     std::vector<MarketAllField> load_and_sort_market_data(DataLoader& data_loader) {

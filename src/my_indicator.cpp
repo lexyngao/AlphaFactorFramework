@@ -38,8 +38,8 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
 
     // 提前定义变量，避免重复定义
     std::string key = "volume";
-    int current_day_index = 5;
-    GSeries series = holder->his_slice_bar(key, current_day_index);
+    // T日数据现在存储在MBarSeries中
+    GSeries series = holder->get_m_bar(key);
     if (series.empty()) {
         series = GSeries();
         series.resize(get_bars_per_day());
@@ -76,7 +76,7 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
     spdlog::debug("[Calculate] symbol={} ti={} bar_index={} volume={} (thread_id={})", tick_data.symbol, ti, bar_index, volume, thread_id_str);
 
     series.set(bar_index, volume);
-    holder->set_his_series(key, current_day_index, series);
+    holder->offline_set_m_bar(key, series);
 
     spdlog::info("[Calculate-Exit] symbol={} thread_id={}", tick_data.symbol, thread_id_str);
 }

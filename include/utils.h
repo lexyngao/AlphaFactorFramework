@@ -13,12 +13,27 @@
 
 // 辅助函数：计算指定日期的前n天（返回"YYYYMMDD"格式）
 std::string get_prev_date(const std::string& date, int n) {
-    // 实现日期解析与偏移（可使用date库如HowardHinnant/date，或手动解析）
-    // 简化示例：假设日期为连续交易日，实际需处理节假日
+    // 实现日期解析与偏移（简化版本，假设连续交易日）
     int year = std::stoi(date.substr(0, 4));
     int month = std::stoi(date.substr(4, 2));
     int day = std::stoi(date.substr(6, 2));
-    // ... 日期偏移逻辑 ...
+    
+    // 简单的日期偏移逻辑（不考虑月末、年末等复杂情况）
+    day -= n;
+    
+    // 处理日期为负数的情况
+    while (day <= 0) {
+        month--;
+        if (month <= 0) {
+            month = 12;
+            year--;
+        }
+        
+        // 简单的月份天数（不考虑闰年）
+        int days_in_month[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+        day += days_in_month[month - 1];
+    }
+    
     return fmt::format("{:04d}{:02d}{:02d}", year, month, day);
 }
 

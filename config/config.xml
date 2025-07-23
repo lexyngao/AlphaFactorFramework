@@ -1,5 +1,5 @@
 <Tsaigu>
-    <Universe calculate_date="20240701" stock_universe="1800" pre_days="5"/>
+    <Universe calculate_date="20240702" stock_universe="1800" pre_days="1"/>
     <Modules>
         <Module handler="Indicator" name="volume" id="VolumeIndicator"
                 path="data/indicator" frequency="1min"/>

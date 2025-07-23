@@ -66,7 +66,8 @@ public:
             for (const auto& [stock_code, holder_ptr] : indicator_storage) {
                 if (!holder_ptr) continue;
                 const BaseSeriesHolder* holder = holder_ptr.get();
-                GSeries series = holder->his_slice_bar(module.name, 5); // T日索引
+                // T日数据现在存储在MBarSeries中
+                GSeries series = holder->get_m_bar(module.name);
                 // 确保series长度和bars_per_day一致
                 if (series.get_size() < bars_per_day) {
                     series.resize(bars_per_day);
@@ -148,18 +149,23 @@ public:
             const ModuleConfig& module,
             const GlobalConfig& global_config
     ) {
+        spdlog::info("load_multi_day_indicators 开始执行");
         const std::string& T_date = global_config.calculate_date;
         const int pre_days = global_config.pre_days;
         const std::string& universe = global_config.stock_universe;
+        spdlog::info("参数: T_date={}, pre_days={}, universe={}", T_date, pre_days, universe);
 
         // 步骤1：读取T日股票列表
+        spdlog::info("步骤1：读取T日股票列表");
         std::vector<std::string> T_stock_list = load_stock_list(universe, T_date);
+        spdlog::info("T日股票列表大小: {}", T_stock_list.size());
         if (T_stock_list.empty()) {
             spdlog::error("T日[{}]股票列表为空，无法继续", T_date);
             return false;
         }
 
         // 步骤2：加载T日数据
+        spdlog::info("步骤2：加载T日数据");
         bool T_exists = load_single_day_indicator(
             indicator, module, T_date, T_stock_list
         );
@@ -170,6 +176,7 @@ public:
         }
 
         // 步骤3：加载历史指标（T-pre_days ~ T-1日）
+        spdlog::info("步骤3：开始加载历史指标，pre_days={}", pre_days);
         for (int i = 1; i <= pre_days; ++i) {
             std::string hist_date = get_prev_date(T_date, i);
             spdlog::info("开始加载历史日期[{}]的指标数据", hist_date);
@@ -196,7 +203,8 @@ public:
                 }
                 auto holder_it = indicator->get_storage().find(stock);
                 if (holder_it != indicator->get_storage().end() && holder_it->second) {
-                    holder_it->second->set_his_series(module.name, pre_days - i, series);
+                    // 新的索引逻辑：i=1表示往前1日，i=2表示往前2日，...，i=pre_days表示往前pre_days日
+                    holder_it->second->set_his_series(module.name, i, series);
                 }
             }
             spdlog::info("历史日期[{}]指标重索引完成", hist_date);
@@ -223,11 +231,12 @@ static bool load_single_day_indicator(
         spdlog::error("解析T日[{}]指标文件失败", date);
         return false;
     }
-    // 直接写入indicator的存储结构
+    // 直接写入indicator的存储结构（T日数据）
     for (const auto& stock : T_stock_list) {
         auto holder_it = indicator->get_storage().find(stock);
         if (holder_it != indicator->get_storage().end() && holder_it->second) {
-            holder_it->second->set_his_series(module.name, 5, stock_series[stock]);
+            // T日数据使用offline_set_m_bar方法存储到MBarSeries中
+            holder_it->second->offline_set_m_bar(module.name, stock_series[stock]);
         }
     }
     return true;
@@ -407,7 +416,7 @@ private:
                 GSeries empty_series;
                 int bar_count = 0;
                 if (!hist_stock_list.empty() && hist_raw_data.count(hist_stock_list[0])) {
-                    bar_count = hist_raw_data.at(hist_stock_list[0]).size;  // 按历史数据长度对齐
+                    bar_count = hist_raw_data.at(hist_stock_list[0]).get_size();  // 按历史数据长度对齐
                 }
                 for (int i = 0; i < bar_count; ++i) {
                     empty_series.push(NAN);  // 空值填充
@@ -443,10 +452,14 @@ private:
 
         // 解析数值
         while (std::getline(ss, token, ',')) {
-            if (token.empty()) {
+            if (token.empty() || token == "nan" || token == "NaN" || token == "NAN") {
                 values.push_back(NAN);
             } else {
-                values.push_back(std::stod(token));
+                try {
+                    values.push_back(std::stod(token));
+                } catch (const std::exception& e) {
+                    values.push_back(NAN);  // 解析失败时设为NaN
+                }
             }
         }
 
@@ -514,7 +527,16 @@ private:
             while (std::getline(line_ss, token, ',')) {
                 if (stock_idx >= stock_list.size()) break;
                 const std::string& stock_code = stock_list[stock_idx];
-                double value = token.empty() ? NAN : std::stod(token);
+                double value;
+                if (token.empty() || token == "nan" || token == "NaN" || token == "NAN") {
+                    value = NAN;
+                } else {
+                    try {
+                        value = std::stod(token);
+                    } catch (const std::exception& e) {
+                        value = NAN;  // 解析失败时设为NaN
+                    }
+                }
 
                 // 为当前股票的GSeries设置指定bar_index的值
                 GSeries& series = stock_series[stock_code];
