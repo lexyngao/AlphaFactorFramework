@@ -35,7 +35,7 @@ private:
 
     // 指标和因子容器
     std::unordered_map<std::string, std::shared_ptr<Indicator>> indicators_;  // key: 指标名
-    std::vector<std::shared_ptr<Factor>> factors_;
+    std::unordered_map<std::string, std::shared_ptr<Factor>> factors_;  // key: 因子名
 
     // 存储股票列表
     std::vector<std::string> stock_list_;
@@ -123,6 +123,15 @@ public:
         return nullptr;
     }
 
+    std::shared_ptr<Factor> get_factor(const std::string& name) const {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        auto it = factors_.find(name);
+        if (it != factors_.end()) {
+            return it->second;
+        }
+        return nullptr;
+    }
+
     // 构造函数：初始化线程池
     explicit CalculationEngine(const GlobalConfig& cfg)
             : config_(cfg), time_interval_ms_(cfg.factor_frequency) {
@@ -180,7 +189,7 @@ public:
 
     void add_factor(std::shared_ptr<Factor> factor) {
         std::lock_guard<std::mutex> lock(queue_mutex_);  // 避免并发修改
-        factors_.push_back(factor);
+        factors_[factor->get_name()] = factor;
     }
 
 
@@ -190,7 +199,7 @@ public:
     }
 
     // 获取因子存储
-    const std::vector<std::shared_ptr<Factor>>& get_factor_storage() const {
+    const std::unordered_map<std::string, std::shared_ptr<Factor>>& get_factor_storage() const {
         return factors_;
     }
 
@@ -273,18 +282,19 @@ public:
         // 提交因子计算任务
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
-            for (auto& factor : factors_) {
-                task_queue_.push([this, factor, bar_runners, ti]() {
+            for (auto& [factor_name, factor] : factors_) {
+                auto factor_ptr = factor;  // 创建局部副本避免捕获冲突
+                task_queue_.push([this, factor_ptr, bar_runners, ti]() {
                     try {
                         // 调用因子的definition函数
-                        GSeries result = factor->definition(bar_runners, stock_list_, ti);
+                        GSeries result = factor_ptr->definition(bar_runners, stock_list_, ti);
                         
                         // 将结果存储到factor的存储结构中
-                        factor->set_factor_result(ti, result);
+                        factor_ptr->set_factor_result(ti, result);
                         
-                        spdlog::debug("因子[{}]计算完成，时间桶: {}", factor->get_name(), ti);
+                        spdlog::debug("因子[{}]计算完成，时间桶: {}", factor_ptr->get_name(), ti);
                     } catch (const std::exception& e) {
-                        spdlog::error("因子[{}]计算失败: {}", factor->get_name(), e.what());
+                        spdlog::error("因子[{}]计算失败: {}", factor_ptr->get_name(), e.what());
                     }
                 });
             }
