@@ -249,7 +249,7 @@ public:
     // 时间触发因子计算
     void onTime() {
         // 获取所有Indicator的存储数据
-        std::unordered_map<std::string, BaseSeriesHolder*> bar_runners;
+        std::unordered_map<std::string, BarSeriesHolder*> bar_runners;
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
             for (const auto& [name, indicator] : indicators_) {
@@ -272,10 +272,6 @@ public:
             static int time_bucket_counter = 0;
             ti = time_bucket_counter;
             time_bucket_counter++;
-            
-
-            
-
         }
 
         if (ti < 0) {
