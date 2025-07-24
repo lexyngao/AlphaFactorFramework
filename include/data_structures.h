@@ -807,6 +807,7 @@ private:
     double current_minute_close = 0.0;
     double pre_close = 0.0;
     std::unordered_map<std::string, GSeries> MBarSeries; // today m bar
+    mutable std::mutex m_bar_mutex_; // 保护MBarSeries的互斥锁
 
 public:
     bool status = false;
@@ -873,6 +874,7 @@ public:
     }
 
     void offline_set_m_bar(const std::string& factor_name, const GSeries& val) {
+        std::lock_guard<std::mutex> lock(m_bar_mutex_);
         MBarSeries[factor_name] = val;
         status = true;
     }
