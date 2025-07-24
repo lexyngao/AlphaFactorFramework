@@ -49,7 +49,7 @@ private:
         return ss.str();
     }
 
-
+public:
     // 解析格式："YYYY-MM-DD HH:MM:SS.fffffffff"（9位小数，纳秒级）
     // 返回：从1970-01-01 00:00:00 UTC开始的总纳秒数（uint64_t）
     static uint64_t parse_datetime_ns(const std::string& datetime_str) {

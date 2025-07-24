@@ -733,17 +733,11 @@ struct MarketAllField {
 
 // Indicator历史数据持有者（PDF 1.3节）
 class BaseSeriesHolder {  // PDF中为BaseSeriesHolder，修正类名对齐
-private:
+protected:
     std::string stock;  // 股票代码
     
     // T日之前的历史数据：结构：indicator_name -> 日期索引（1=往前1日, 2=往前2日, ..., pre_days=往前pre_days日）-> GSeries
     std::unordered_map<std::string, std::unordered_map<int, GSeries>> HisBarSeries;
-    
-    // T日（今天）的数据：结构：indicator_name -> GSeries
-    std::unordered_map<std::string, GSeries> MBarSeries; // today m bar
-    
-    // 状态标志
-    bool status = false;
 
 public:
     // 1. 构造函数（初始化智能指针）
@@ -753,17 +747,13 @@ public:
     // 2. 移动构造函数（允许对象移动）
     BaseSeriesHolder(BaseSeriesHolder&& other) noexcept
             : stock(std::move(other.stock)),
-              HisBarSeries(std::move(other.HisBarSeries)),
-              MBarSeries(std::move(other.MBarSeries)),
-              status(other.status) {}
+              HisBarSeries(std::move(other.HisBarSeries)) {}
 
     // 3. 移动赋值运算符（允许对象移动赋值）
     BaseSeriesHolder& operator=(BaseSeriesHolder&& other) noexcept {
         if (this != &other) {
             stock = std::move(other.stock);
             HisBarSeries = std::move(other.HisBarSeries);
-            MBarSeries = std::move(other.MBarSeries);
-            status = other.status;
         }
         return *this;
     }
@@ -797,7 +787,91 @@ public:
         return day_map.at(his_day_index);
     }
 
-    // 新增：设置T日（今天）的数据
+    // 获取股票代码
+    const std::string& get_stock() const { return stock; }
+
+    // 新增：获取所有indicator key
+    std::vector<std::string> get_all_indicator_keys() const {
+        std::vector<std::string> keys;
+        for (const auto& kv : HisBarSeries) {
+            keys.push_back(kv.first);
+        }
+        return keys;
+    }
+};
+
+// BarSeriesHolder：包含T日数据的子类
+class BarSeriesHolder : public BaseSeriesHolder {
+private:
+    int current_time = 0;
+    double current_minute_close = 0.0;
+    double pre_close = 0.0;
+    std::unordered_map<std::string, GSeries> MBarSeries; // today m bar
+
+public:
+    bool status = false;
+
+    // 继承构造函数
+    explicit BarSeriesHolder(std::string stock_code) : BaseSeriesHolder(std::move(stock_code)) {}
+    
+    // 继承移动构造函数
+    BarSeriesHolder(BarSeriesHolder&& other) noexcept 
+        : BaseSeriesHolder(std::move(other)),
+          current_time(other.current_time),
+          current_minute_close(other.current_minute_close),
+          pre_close(other.pre_close),
+          MBarSeries(std::move(other.MBarSeries)),
+          status(other.status) {}
+    
+    // 继承移动赋值运算符
+    BarSeriesHolder& operator=(BarSeriesHolder&& other) noexcept {
+        if (this != &other) {
+            BaseSeriesHolder::operator=(std::move(other));
+            current_time = other.current_time;
+            current_minute_close = other.current_minute_close;
+            pre_close = other.pre_close;
+            MBarSeries = std::move(other.MBarSeries);
+            status = other.status;
+        }
+        return *this;
+    }
+    
+    // 禁止复制
+    BarSeriesHolder(const BarSeriesHolder&) = delete;
+    BarSeriesHolder& operator=(const BarSeriesHolder&) = delete;
+
+    double get_pre_close() const {
+        return pre_close;
+    }
+
+    bool check_data_exist(const std::string& name) const {
+        return MBarSeries.count(name) > 0;
+    }
+
+    const GSeries& get_data(const std::string& name) const {
+        return MBarSeries.at(name);
+    }
+
+    GSeries get_today_min_series(
+            const std::string& factor_name, const int& pre_length, const int& today_minute_index) const {
+        int minute_len = today_minute_index + 1;
+        GSeries today_series;
+        if (pre_length > 0) {
+            for (int his_index = pre_length; his_index >= 1; his_index--) {
+                GSeries his_series = his_slice_bar(factor_name, his_index);
+                today_series.append(his_series);
+            }
+        }
+        if (MBarSeries.count(factor_name)) {
+            GSeries cur_series = MBarSeries.at(factor_name).head(minute_len);
+            today_series.append(cur_series);
+        } else {
+            spdlog::critical("{} m bar no factor {}", stock, factor_name);
+        }
+
+        return today_series;
+    }
+
     void offline_set_m_bar(const std::string& factor_name, const GSeries& val) {
         MBarSeries[factor_name] = val;
         status = true;
@@ -819,18 +893,6 @@ public:
 
     // 新增：获取T日数据的状态
     bool get_status() const { return status; }
-
-    // 获取股票代码
-    const std::string& get_stock() const { return stock; }
-
-    // 新增：获取所有indicator key
-    std::vector<std::string> get_all_indicator_keys() const {
-        std::vector<std::string> keys;
-        for (const auto& kv : HisBarSeries) {
-            keys.push_back(kv.first);
-        }
-        return keys;
-    }
 
     // 新增：获取所有T日factor key
     std::vector<std::string> get_all_m_bar_keys() const {
@@ -910,8 +972,8 @@ protected:
         }
     }
 
-    // 关键修改：用unique_ptr自动管理BaseSeriesHolder的生命周期
-    std::unordered_map<std::string, std::unique_ptr<BaseSeriesHolder>> storage_;
+    // 关键修改：用unique_ptr自动管理BarSeriesHolder的生命周期
+    std::unordered_map<std::string, std::unique_ptr<BarSeriesHolder>> storage_;
 
     std::unordered_map<std::string, uint64_t> last_calculation_time_; // 股票->上次计算时间（纳秒）
 
@@ -951,7 +1013,7 @@ public:
     // 获取更新频率
     Frequency frequency() const { return frequency_; }
     // 获取存储结构（供Factor访问）
-    const std::unordered_map<std::string, std::unique_ptr<BaseSeriesHolder>>& get_storage()  const {
+    const std::unordered_map<std::string, std::unique_ptr<BarSeriesHolder>>& get_storage()  const {
         return storage_;
     }
 
@@ -960,7 +1022,7 @@ public:
         storage_.clear();  // 清空原有存储
 
         for (const auto& stock : stock_list) {
-            auto holder = std::make_unique<BaseSeriesHolder>(stock);
+            auto holder = std::make_unique<BarSeriesHolder>(stock);
             try {
                 load_historical_data(stock, *holder);  // 加载该股票的历史数据
             } catch (const std::exception& e) {
@@ -973,7 +1035,7 @@ public:
     }
 
     // 辅助函数：加载单只股票的历史数据（可在子类重写）
-    virtual void load_historical_data(const std::string& stock_code, BaseSeriesHolder& holder) {
+    virtual void load_historical_data(const std::string& stock_code, BarSeriesHolder& holder) {
         spdlog::debug("指标[{}]暂未实现{}的历史数据加载", name_, stock_code);
     }
 
@@ -1038,11 +1100,11 @@ public:
         auto it = storage_.find(stock);
         if (it == storage_.end() || !it->second) {
             // 如果没有对应股票的holder，则新建
-            storage_[stock] = std::make_unique<BaseSeriesHolder>(stock);
+            storage_[stock] = std::make_unique<BarSeriesHolder>(stock);
             it = storage_.find(stock);
         }
-        // T日一般用his_day_index=0
-        it->second->set_his_series(indicator_name, 0, series);
+        // T日数据使用offline_set_m_bar方法
+        it->second->offline_set_m_bar(indicator_name, series);
     }
 };
 
@@ -1067,7 +1129,7 @@ public:
 
     // 新增：definition方法，用于计算因子
     virtual GSeries definition(
-            const std::unordered_map<std::string, BaseSeriesHolder*>& bar_runners,
+            const std::unordered_map<std::string, BarSeriesHolder*>& bar_runners,
             const std::vector<std::string>& sorted_stock_list,
             int ti
     ) {

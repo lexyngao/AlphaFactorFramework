@@ -65,7 +65,7 @@ public:
             int bars_per_day = indicator->get_bars_per_day();
             for (const auto& [stock_code, holder_ptr] : indicator_storage) {
                 if (!holder_ptr) continue;
-                const BaseSeriesHolder* holder = holder_ptr.get();
+                const BarSeriesHolder* holder = holder_ptr.get();
                 // T日数据现在存储在MBarSeries中
                 GSeries series = holder->get_m_bar(module.name);
                 // 确保series长度和bars_per_day一致

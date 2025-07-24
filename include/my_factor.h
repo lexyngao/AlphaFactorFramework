@@ -16,7 +16,7 @@ public:
 
     // 实现Factor的definition函数
     GSeries definition(
-        const std::unordered_map<std::string, BaseSeriesHolder*>& barRunner,
+        const std::unordered_map<std::string, BarSeriesHolder*>& barRunner,
         const std::vector<std::string>& sorted_stock_list,
         int ti
     ) override;

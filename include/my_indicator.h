@@ -18,7 +18,7 @@ public:
 
     // 重写计算接口
     void Calculate(const SyncTickData& tick_data) override;
-    BaseSeriesHolder* get_bar_series_holder(const std::string& stock_code) const;
+    BarSeriesHolder* get_bar_series_holder(const std::string& stock_code) const;
 
 private:
 

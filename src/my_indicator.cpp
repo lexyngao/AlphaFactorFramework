@@ -24,7 +24,7 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
         spdlog::warn("[Calculate] symbol={} not found in storage_ (thread_id={})", tick_data.symbol, thread_id_str);
         return;
     }
-    BaseSeriesHolder* holder = it->second.get();
+    BarSeriesHolder* holder = it->second.get();
 
     int ti = get_time_bucket_index(tick_data.tick_data.real_time);
     if (ti < 0) {
@@ -81,7 +81,7 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
     spdlog::info("[Calculate-Exit] symbol={} thread_id={}", tick_data.symbol, thread_id_str);
 }
 
-BaseSeriesHolder* VolumeIndicator::get_bar_series_holder(const std::string& stock_code) const {
+BarSeriesHolder* VolumeIndicator::get_bar_series_holder(const std::string& stock_code) const {
     auto it = storage_.find(stock_code);
     if (it != storage_.end()) {
         return it->second.get();  // 返回unique_ptr管理的原始指针
