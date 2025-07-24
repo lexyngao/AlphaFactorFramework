@@ -33,14 +33,20 @@ public:
     }
 
     void load_all_indicators() {
+        spdlog::info("开始加载所有指标数据...");
         for (const auto& module : config_.modules) {
             if (module.handler == "Indicator") {
+                spdlog::info("处理指标模块: {}", module.name);
                 auto it = indicator_map_.find(module.name);
                 if (it != indicator_map_.end()) {
+                    spdlog::info("调用load_multi_day_indicators for {}", module.name);
                     ResultStorage::load_multi_day_indicators(it->second, module, config_);
+                } else {
+                    spdlog::error("未找到指标: {}", module.name);
                 }
             }
         }
+        spdlog::info("指标数据加载完成");
     }
 
     std::vector<MarketAllField> load_and_sort_market_data(DataLoader& data_loader) {
@@ -66,7 +72,7 @@ public:
         // 为每个时间间隔生成Time事件
         for (int interval_seconds : time_intervals) {
             // 计算交易时间内的所有时间点
-            std::vector<uint64_t> time_points = generate_time_points(interval_seconds);
+            std::vector<uint64_t> time_points = generate_time_points(interval_seconds, config_.calculate_date);
             
             for (uint64_t time_point : time_points) {
                 MarketAllField time_field(
@@ -112,8 +118,20 @@ public:
 
 private:
     // 生成指定间隔的时间点
-    std::vector<uint64_t> generate_time_points(int interval_seconds) {
+    std::vector<uint64_t> generate_time_points(int interval_seconds, const std::string& date_str) {
         std::vector<uint64_t> time_points;
+        
+        // 解析日期字符串 (格式: YYYYMMDD)
+        if (date_str.length() != 8) {
+            spdlog::error("日期格式错误: {}, 期望格式: YYYYMMDD", date_str);
+            return time_points;
+        }
+        
+        int year = std::stoi(date_str.substr(0, 4));
+        int month = std::stoi(date_str.substr(4, 2));
+        int day = std::stoi(date_str.substr(6, 2));
+        
+        spdlog::debug("生成时间点: 日期={}-{:02d}-{:02d}, 间隔={}秒", year, month, day, interval_seconds);
         
         // 交易时间：9:30-11:30, 13:00-15:00
         const int morning_start = 9 * 3600 + 30 * 60;   // 9:30
@@ -123,32 +141,36 @@ private:
         
         // 生成上午的时间点
         for (int time = morning_start; time < morning_end; time += interval_seconds) {
-            // 转换为纳秒级时间戳（假设是2024年7月1日）
-            uint64_t timestamp = convert_to_timestamp(2024, 7, 1, time);
+            uint64_t timestamp = convert_to_timestamp(year, month, day, time);
             time_points.push_back(timestamp);
         }
         
         // 生成下午的时间点
         for (int time = afternoon_start; time < afternoon_end; time += interval_seconds) {
-            uint64_t timestamp = convert_to_timestamp(2024, 7, 1, time);
+            uint64_t timestamp = convert_to_timestamp(year, month, day, time);
             time_points.push_back(timestamp);
         }
         
+        spdlog::debug("生成了 {} 个时间点", time_points.size());
         return time_points;
     }
     
     // 将时间转换为纳秒级时间戳
     uint64_t convert_to_timestamp(int year, int month, int day, int seconds_in_day) {
-        // 简化的时间转换，实际应该使用更精确的日期时间库
-        // 这里假设是2024年7月1日，转换为UTC时间戳
         int hour = seconds_in_day / 3600;
         int minute = (seconds_in_day % 3600) / 60;
         int second = seconds_in_day % 60;
         
-        // 转换为北京时间（UTC+8）
-        // 这里简化处理，实际应该使用标准的时间库
-        uint64_t timestamp = 1720000000000000000ULL;  // 2024年7月1日的基础时间戳
-        timestamp += (hour * 3600 + minute * 60 + second) * 1000000000ULL;
+        // 构建日期时间字符串
+        std::string datetime_str = fmt::format("{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.000000000", 
+                                              year, month, day, hour, minute, second);
+        
+        // 使用数据加载器的解析函数
+        uint64_t timestamp = DataLoader::parse_datetime_ns(datetime_str);
+        
+        spdlog::debug("时间转换: {}-{:02d}-{:02d} {:02d}:{:02d}:{:02d} -> {} ns", 
+                     year, month, day, hour, minute, second, timestamp);
+        
         return timestamp;
     }
 

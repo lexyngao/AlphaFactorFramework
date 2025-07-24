@@ -539,7 +539,7 @@ GSeries GSeries::neutralize(const GSeries &other) const {
 }
 
 GSeries GSeries::element_mul(const GSeries &other) const {
-    int min_size = std::min(size, other.size);
+    int min_size = std::min(get_size(), other.get_size());
     std::vector<double> result(min_size);
     for (int i = 0; i < min_size; ++i) {
         if (std::isfinite(d_vec[i]) && std::isfinite(other.d_vec[i])) {
@@ -552,7 +552,7 @@ GSeries GSeries::element_mul(const GSeries &other) const {
 }
 
 void GSeries::element_mul_inplace(const GSeries &other) {
-    int min_size = std::min(size, other.size);
+    int min_size = std::min(get_size(), other.get_size());
     for (int i = 0; i < min_size; ++i) {
         if (std::isfinite(d_vec[i]) && std::isfinite(other.d_vec[i])) {
             d_vec[i] *= other.d_vec[i];
@@ -564,7 +564,7 @@ void GSeries::element_mul_inplace(const GSeries &other) {
 }
 
 GSeries GSeries::element_div(const GSeries &other) const {
-    int min_size = std::min(size, other.size);
+    int min_size = std::min(get_size(), other.get_size());
     std::vector<double> result(min_size);
     for (int i = 0; i < min_size; ++i) {
         if (std::isfinite(d_vec[i]) && std::isfinite(other.d_vec[i]) && other.d_vec[i] != 0.0) {
@@ -577,7 +577,7 @@ GSeries GSeries::element_div(const GSeries &other) const {
 }
 
 void GSeries::element_div_inplace(const GSeries &other) {
-    int min_size = std::min(size, other.size);
+    int min_size = std::min(get_size(), other.get_size());
     for (int i = 0; i < min_size; ++i) {
         if (std::isfinite(d_vec[i]) && std::isfinite(other.d_vec[i]) && other.d_vec[i] != 0.0) {
             d_vec[i] /= other.d_vec[i];
@@ -589,7 +589,7 @@ void GSeries::element_div_inplace(const GSeries &other) {
 }
 
 GSeries GSeries::element_add(const GSeries &other) const {
-    int min_size = std::min(size, other.size);
+    int min_size = std::min(get_size(), other.get_size());
     std::vector<double> result(min_size);
     for (int i = 0; i < min_size; ++i) {
         if (std::isfinite(d_vec[i]) && std::isfinite(other.d_vec[i])) {
@@ -602,7 +602,7 @@ GSeries GSeries::element_add(const GSeries &other) const {
 }
 
 void GSeries::element_add_inplace(const GSeries &other) {
-    int min_size = std::min(size, other.size);
+    int min_size = std::min(get_size(), other.get_size());
     for (int i = 0; i < min_size; ++i) {
         if (std::isfinite(d_vec[i]) && std::isfinite(other.d_vec[i])) {
             d_vec[i] += other.d_vec[i];
@@ -614,7 +614,7 @@ void GSeries::element_add_inplace(const GSeries &other) {
 }
 
 GSeries GSeries::element_sub(const GSeries &other) const {
-    int min_size = std::min(size, other.size);
+    int min_size = std::min(get_size(), other.get_size());
     std::vector<double> result(min_size);
     for (int i = 0; i < min_size; ++i) {
         if (std::isfinite(d_vec[i]) && std::isfinite(other.d_vec[i])) {
@@ -627,7 +627,7 @@ GSeries GSeries::element_sub(const GSeries &other) const {
 }
 
 void GSeries::element_sub_inplace(const GSeries &other) {
-    int min_size = std::min(size, other.size);
+    int min_size = std::min(get_size(), other.get_size());
     for (int i = 0; i < min_size; ++i) {
         if (std::isfinite(d_vec[i]) && std::isfinite(other.d_vec[i])) {
             d_vec[i] -= other.d_vec[i];
@@ -639,8 +639,8 @@ void GSeries::element_sub_inplace(const GSeries &other) {
 }
 
 GSeries GSeries::element_abs() const {
-    std::vector<double> result(size);
-    for (int i = 0; i < size; ++i) {
+    std::vector<double> result(get_size());
+    for (int i = 0; i < get_size(); ++i) {
         if (std::isfinite(d_vec[i])) {
             result[i] = std::abs(d_vec[i]);
         } else {
@@ -659,8 +659,8 @@ void GSeries::element_abs_inplace() {
 }
 
 GSeries GSeries::element_pow(const double &_x) const {
-    std::vector<double> result(size);
-    for (int i = 0; i < size; ++i) {
+    std::vector<double> result(get_size());
+    for (int i = 0; i < get_size(); ++i) {
         if (std::isfinite(d_vec[i])) {
             result[i] = std::pow(d_vec[i], _x);
         } else {
@@ -680,8 +680,8 @@ void GSeries::element_pow_inplace(const double &_x) {
 }
 
 GSeries GSeries::element_add(const double &_x) const {
-    std::vector<double> result(size);
-    for (int i = 0; i < size; ++i) {
+    std::vector<double> result(get_size());
+    for (int i = 0; i < get_size(); ++i) {
         if (std::isfinite(d_vec[i])) {
             result[i] = d_vec[i] + _x;
         } else {
@@ -700,8 +700,8 @@ void GSeries::element_add_inplace(const double &_x) {
 }
 
 GSeries GSeries::element_sub(const double &_x) const {
-    std::vector<double> result(size);
-    for (int i = 0; i < size; ++i) {
+    std::vector<double> result(get_size());
+    for (int i = 0; i < get_size(); ++i) {
         if (std::isfinite(d_vec[i])) {
             result[i] = d_vec[i] - _x;
         } else {
@@ -720,8 +720,8 @@ void GSeries::element_sub_inplace(const double &_x) {
 }
 
 GSeries GSeries::element_rsub(const double &_x) const {
-    std::vector<double> result(size);
-    for (int i = 0; i < size; ++i) {
+    std::vector<double> result(get_size());
+    for (int i = 0; i < get_size(); ++i) {
         if (std::isfinite(d_vec[i])) {
             result[i] = _x - d_vec[i];
         } else {
@@ -742,11 +742,11 @@ void GSeries::element_rsub_inplace(const double &_x) {
 
 GSeries GSeries::element_div(const double &_x) const {
     if (_x == 0.0) {
-        return GSeries(std::vector<double>(size, std::numeric_limits<double>::quiet_NaN()));
+        return GSeries(std::vector<double>(get_size(), std::numeric_limits<double>::quiet_NaN()));
     }
     
-    std::vector<double> result(size);
-    for (int i = 0; i < size; ++i) {
+    std::vector<double> result(get_size());
+    for (int i = 0; i < get_size(); ++i) {
         if (std::isfinite(d_vec[i])) {
             result[i] = d_vec[i] / _x;
         } else {
@@ -772,8 +772,8 @@ void GSeries::element_div_inplace(const double &_x) {
 }
 
 GSeries GSeries::element_mul(const double &_x) const {
-    std::vector<double> result(size);
-    for (int i = 0; i < size; ++i) {
+    std::vector<double> result(get_size());
+    for (int i = 0; i < get_size(); ++i) {
         if (std::isfinite(d_vec[i])) {
             result[i] = d_vec[i] * _x;
         } else {
@@ -792,8 +792,8 @@ void GSeries::element_mul_inplace(const double &_x) {
 }
 
 GSeries GSeries::element_rdiv(const double &_x) const {
-    std::vector<double> result(size);
-    for (int i = 0; i < size; ++i) {
+    std::vector<double> result(get_size());
+    for (int i = 0; i < get_size(); ++i) {
         if (std::isfinite(d_vec[i]) && d_vec[i] != 0.0) {
             result[i] = _x / d_vec[i];
         } else {
