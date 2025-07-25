@@ -20,6 +20,7 @@
 #include <fstream>
 #include <queue>
 #include <limits>
+#include <atomic>
 
 
 // 存储计算结果的序列（PDF 1.3节）
@@ -956,6 +957,9 @@ protected:
     std::string id_;            // 类名（如"VolumeIndicator"）
     std::string path_;          // 持久化基础路径
     Frequency frequency_;       // 更新频率
+    
+    // 新增：计算状态标记（线程安全）
+    mutable std::atomic<bool> is_calculated_{false};  // 是否已计算完成
     int step_ = 1; // 步长，默认每个bar都输出
     int bars_per_day_ = 960; // 默认15s
 
@@ -1045,8 +1049,20 @@ public:
         spdlog::debug("指标[{}]暂未实现{}的历史数据加载", name_, stock_code);
     }
 
-    // 新增：尝试计算（内部判断频率，解耦engine）
+    // 新增：状态管理方法
+    void mark_as_calculated() const { is_calculated_ = true; }
+
+    bool is_calculated() const { return is_calculated_; }
+
+    void reset_calculation_status() const { is_calculated_ = false; }
+
+    
+    // 修改：尝试计算（增加状态检查）
     void try_calculate(const SyncTickData& sync_tick) {
+        if (is_calculated_) {
+            spdlog::debug("指标[{}]已计算完成，跳过", name_);
+            return;
+        }
         Calculate(sync_tick);
     }
 

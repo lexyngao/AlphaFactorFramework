@@ -96,7 +96,12 @@ private:
             FinalAction on_exit([this]() {  });
             try {
                 for (auto& [ind_name, indicator] : indicators_) {
-                    indicator->try_calculate(sync_tick); // 只需调用，不用管step
+                    // 检查计算状态，避免重复计算
+                    if (!indicator->is_calculated()) {
+                        indicator->try_calculate(sync_tick);
+                    } else {
+                        spdlog::debug("指标[{}]已计算，跳过", ind_name);
+                    }
                 }
             } catch (const std::exception& e) {
                 spdlog::error("[指标计算] 股票{}失败: {}", sync_tick.symbol, e.what());
@@ -194,6 +199,27 @@ public:
     // 获取因子存储
     const std::unordered_map<std::string, std::shared_ptr<Factor>>& get_factor_storage() const {
         return factors_;
+    }
+    
+    // 新增：重置所有指标的计算状态（用于强制重新计算）
+    void reset_all_indicator_status() {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        for (auto& [ind_name, indicator] : indicators_) {
+            indicator->reset_calculation_status();
+            spdlog::info("重置指标[{}]的计算状态", ind_name);
+        }
+    }
+    
+    // 新增：重置指定指标的计算状态
+    void reset_indicator_status(const std::string& indicator_name) {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        auto it = indicators_.find(indicator_name);
+        if (it != indicators_.end()) {
+            it->second->reset_calculation_status();
+            spdlog::info("重置指标[{}]的计算状态", indicator_name);
+        } else {
+            spdlog::warn("未找到指标[{}]", indicator_name);
+        }
     }
 
     // 重构：处理订单（直接添加到对应股票的 SyncTickData）

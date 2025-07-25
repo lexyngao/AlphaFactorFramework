@@ -37,6 +37,10 @@ public:
                 spdlog::error("模块[{}]路径或名称为空", module.name);
                 return false;
             }
+            if(indicator->is_calculated()){
+                spdlog::info("指标[{}]已经保存",module.name);
+                return true;
+            }
 
             // 2. 创建存储目录
             fs::path base_path = fs::path(module.path) / date / module.frequency;
@@ -171,6 +175,7 @@ public:
         );
         if (T_exists) {
             spdlog::info("T日[{}]指标已存在，直接复用", T_date);
+            indicator->mark_as_calculated();  // 标记为已计算
         } else {
             spdlog::info("T日[{}]指标不存在，将在计算阶段生成", T_date);
         }
