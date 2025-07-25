@@ -29,9 +29,9 @@ GSeries load_gseries_from_file(const std::string& file_path);
 
 class CalculationEngine {
 private:
-    // 全局临时存储（按股票拆分，避免混合存储导致的锁竞争）
-    std::unordered_map<std::string, std::vector<OrderData>> stock_orders_;  // key: 股票代码
-    std::unordered_map<std::string, std::vector<TradeData>> stock_trades_;  // key: 股票代码
+    // 重构：为每只股票维护一个 SyncTickData，直接管理数据
+    std::unordered_map<std::string, SyncTickData> stock_sync_data_;
+    mutable std::mutex sync_data_mutex_;  // 保护 stock_sync_data_
 
     // 指标和因子容器
     std::unordered_map<std::string, std::shared_ptr<Indicator>> indicators_;  // key: 指标名
@@ -51,9 +51,6 @@ private:
     std::thread timer_thread_;
     std::atomic<bool> timer_running_{true};
     uint64_t time_interval_ms_;  // 因子计算触发间隔（毫秒）
-
-
-
 
     // 辅助函数：加载单只股票的历史指标数据
     void load_historical_data(const std::string& stock_code, BaseSeriesHolder& holder) {
@@ -110,9 +107,6 @@ private:
 
 public:
     const GlobalConfig& config_;
-
-
-
 
     std::shared_ptr<Indicator> get_indicator(const std::string& name) const {
         std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -192,7 +186,6 @@ public:
         factors_[factor->get_name()] = factor;
     }
 
-
     // 获取股票列表
     const std::vector<std::string>& get_stock_list() const {
         return stock_list_;
@@ -203,46 +196,42 @@ public:
         return factors_;
     }
 
-    // 处理订单（按股票缓存）
+    // 重构：处理订单（直接添加到对应股票的 SyncTickData）
     void onOrder(const OrderData& order) {
-        stock_orders_[order.symbol].push_back(order);
-        spdlog::debug("[订单] {} 累计: {}条", order.symbol, stock_orders_[order.symbol].size());
+        std::lock_guard<std::mutex> lock(sync_data_mutex_);
+        stock_sync_data_[order.symbol].orders.push_back(order);
+        spdlog::debug("[订单] {} 累计: {}条", order.symbol, stock_sync_data_[order.symbol].orders.size());
     }
 
-    // 处理成交（按股票缓存）
+    // 重构：处理成交（直接添加到对应股票的 SyncTickData）
     void onTrade(const TradeData& trade) {
-        stock_trades_[trade.symbol].push_back(trade);
-        spdlog::debug("[成交] {} 累计: {}条", trade.symbol, stock_trades_[trade.symbol].size());
+        std::lock_guard<std::mutex> lock(sync_data_mutex_);
+        stock_sync_data_[trade.symbol].trans.push_back(trade);
+        spdlog::debug("[成交] {} 累计: {}条", trade.symbol, stock_sync_data_[trade.symbol].trans.size());
     }
 
-// 处理Tick数据（仅负责数据组装和任务提交）
+    // 重构：处理Tick数据（更新 SyncTickData 并触发计算）
     void onTick(const TickData& tick) {
-        // 1. 提取缓存的订单和成交数据
-        std::vector<OrderData> orders;
-        std::vector<TradeData> trades;
-        {
-
-            if (stock_orders_.count(tick.symbol)) {
-                orders = std::move(stock_orders_[tick.symbol]);
-                stock_orders_[tick.symbol].clear();
-            }
-            if (stock_trades_.count(tick.symbol)) {
-                trades = std::move(stock_trades_[tick.symbol]);
-                stock_trades_[tick.symbol].clear();
-            }
-        }
-
-        // 2. 生成SyncTickData（包含本地时间戳）
         SyncTickData sync_tick;
-        sync_tick.symbol = tick.symbol;
-        sync_tick.tick_data = tick;
-        sync_tick.orders = std::move(orders);
-        sync_tick.trans = std::move(trades);
-        // 确保local_time_stamp已正确设置（纳秒级）
-        // 例如：
-         sync_tick.local_time_stamp = tick.real_time;
-
-        // 3. 提交计算任务（彻底解耦）
+        
+        {
+            std::lock_guard<std::mutex> lock(sync_data_mutex_);
+            auto& sync_data = stock_sync_data_[tick.symbol];
+            
+            // 复制当前状态
+            sync_tick = sync_data;
+            
+            // 更新 tick_data
+            sync_tick.tick_data = tick;
+            sync_tick.symbol = tick.symbol;
+            sync_tick.local_time_stamp = tick.real_time;
+            
+            // 清理数据，准备下一个周期
+            sync_data.orders.clear();
+            sync_data.trans.clear();
+        }
+        
+        // 提交计算任务
         submit_indicator_calculation(sync_tick);
     }
 
@@ -284,10 +273,11 @@ public:
             std::lock_guard<std::mutex> lock(queue_mutex_);
             for (auto& [factor_name, factor] : factors_) {
                 auto factor_ptr = factor;  // 创建局部副本避免捕获冲突
-                task_queue_.push([this, factor_ptr, bar_runners, ti]() {
+                auto bar_runners_copy = bar_runners;  // 创建bar_runners的副本
+                task_queue_.push([this, factor_ptr, bar_runners_copy, ti]() {
                     try {
                         // 调用因子的definition函数
-                        GSeries result = factor_ptr->definition(bar_runners, stock_list_, ti);
+                        GSeries result = factor_ptr->definition(bar_runners_copy, stock_list_, ti);
                         
                         // 将结果存储到factor的存储结构中
                         factor_ptr->set_factor_result(ti, result);
@@ -322,8 +312,6 @@ public:
                 spdlog::warn("未知数据类型: {}", static_cast<int>(field.type));
         }
     }
-
-
 };
 
 #endif // ALPHAFACTORFRAMEWORK_CAL_ENGINE_H

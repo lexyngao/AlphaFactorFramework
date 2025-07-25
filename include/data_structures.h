@@ -846,15 +846,18 @@ public:
     }
 
     bool check_data_exist(const std::string& name) const {
+        std::lock_guard<std::mutex> lock(m_bar_mutex_);
         return MBarSeries.count(name) > 0;
     }
 
     const GSeries& get_data(const std::string& name) const {
+        std::lock_guard<std::mutex> lock(m_bar_mutex_);
         return MBarSeries.at(name);
     }
 
     GSeries get_today_min_series(
             const std::string& factor_name, const int& pre_length, const int& today_minute_index) const {
+        std::lock_guard<std::mutex> lock(m_bar_mutex_);
         int minute_len = today_minute_index + 1;
         GSeries today_series;
         if (pre_length > 0) {
@@ -881,6 +884,7 @@ public:
 
     // 新增：获取T日（今天）的数据
     GSeries get_m_bar(const std::string& factor_name) const {
+        std::lock_guard<std::mutex> lock(m_bar_mutex_);
         if (!MBarSeries.count(factor_name)) {
             spdlog::error("{}: Factor {} not found in MBarSeries", stock, factor_name);
             return GSeries();
@@ -890,6 +894,7 @@ public:
 
     // 新增：检查T日数据是否存在
     bool has_m_bar(const std::string& factor_name) const {
+        std::lock_guard<std::mutex> lock(m_bar_mutex_);
         return MBarSeries.count(factor_name) > 0;
     }
 
@@ -898,6 +903,7 @@ public:
 
     // 新增：获取所有T日factor key
     std::vector<std::string> get_all_m_bar_keys() const {
+        std::lock_guard<std::mutex> lock(m_bar_mutex_);
         std::vector<std::string> keys;
         for (const auto& kv : MBarSeries) {
             keys.push_back(kv.first);
@@ -976,8 +982,6 @@ protected:
 
     // 关键修改：用unique_ptr自动管理BarSeriesHolder的生命周期
     std::unordered_map<std::string, std::unique_ptr<BarSeriesHolder>> storage_;
-
-    std::unordered_map<std::string, uint64_t> last_calculation_time_; // 股票->上次计算时间（纳秒）
 
 
 public:

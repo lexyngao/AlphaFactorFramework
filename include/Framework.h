@@ -9,6 +9,8 @@
 #include <vector>
 #include <unordered_map>
 #include <set>
+#include <thread>
+#include <spdlog/spdlog.h>
 
 class Framework {
 public:
@@ -88,10 +90,46 @@ public:
         // 重新排序所有数据（包括Time事件）
         DataLoader().sort_market_datas(all_data_with_time);
         
-        // 运行引擎
+        // 按股票分组数据
+        std::unordered_map<std::string, std::vector<MarketAllField>> stock_data;
+        std::vector<MarketAllField> time_events;
+        
         for (const auto& field : all_data_with_time) {
-            engine_.update(field);
+            if (field.type == MarketBufferType::Time) {
+                time_events.push_back(field);
+            } else {
+                stock_data[field.symbol].push_back(field);
+            }
         }
+        
+        spdlog::info("数据分组完成: {}只股票, {}个Time事件", stock_data.size(), time_events.size());
+        
+        // 多线程处理：每个股票一个线程，保持单股票内的串行
+        std::vector<std::thread> stock_threads;
+        
+        // 处理股票数据
+        for (const auto& [symbol, data] : stock_data) {
+            stock_threads.emplace_back([this, symbol = symbol, data = data]() {
+                spdlog::debug("开始处理股票 {} 的 {} 条数据", symbol, data.size());
+                for (const auto& field : data) {
+                    engine_.update(field);
+                }
+                spdlog::debug("完成处理股票 {}", symbol);
+            });
+        }
+        
+        // 等待所有股票线程完成
+        for (auto& thread : stock_threads) {
+            thread.join();
+        }
+        
+        // 串行处理Time事件（确保在所有股票数据处理完成后）
+        spdlog::info("开始处理 {} 个Time事件", time_events.size());
+        for (const auto& time_event : time_events) {
+            engine_.update(time_event);
+        }
+        
+        spdlog::info("引擎运行完成");
     }
 
     void save_all_results() {
