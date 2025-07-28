@@ -510,28 +510,49 @@ private:
         // 2. 解析数据行，构建GSeries（按股票维度）
         int max_bar_index = -1;
 
-        // 初始化每个股票的GSeries（先预留空间）
-        for (const auto& stock : stock_list) {
-            stock_series[stock] = GSeries();
-        }
-
-        // 3. 读取每行数据（bar_index -> 各股票数值）
+        // 3. 读取每行数据（bar_index -> 各股票数值），先找到最大bar_index
         while (gzgets(gz_file, buffer, sizeof(buffer)) != nullptr) {
             std::string line = buffer;
             std::stringstream line_ss(line);
-            std::vector<std::string> values;
 
             // 解析bar_index（首列）
             std::getline(line_ss, token, ',');
             if (token.empty()) continue;
             int bar_index = std::stoi(token);
             max_bar_index = std::max(max_bar_index, bar_index);
+        }
+
+        // 重新打开文件
+        gzclose(gz_file);
+        gz_file = gzopen(file_path.string().c_str(), "rb");
+        if (!gz_file) {
+            spdlog::error("无法重新打开GZ文件: {}", file_path.string());
+            return false;
+        }
+
+        // 跳过表头
+        gzgets(gz_file, buffer, sizeof(buffer));
+
+        // 4. 初始化每个股票的GSeries（先调整到正确大小）
+        for (const auto& stock : T_stock_list) {
+            stock_series[stock] = GSeries(max_bar_index + 1);  // 直接创建正确大小的序列
+        }
+
+        // 5. 再次读取每行数据，设置值
+        while (gzgets(gz_file, buffer, sizeof(buffer)) != nullptr) {
+            std::string line = buffer;
+            std::stringstream line_ss(line);
+
+            // 解析bar_index（首列）
+            std::getline(line_ss, token, ',');
+            if (token.empty()) continue;
+            int bar_index = std::stoi(token);
 
             // 解析每个股票的数值
             size_t stock_idx = 0;
             while (std::getline(line_ss, token, ',')) {
                 if (stock_idx >= stock_list.size()) break;
-                const std::string& stock_code = stock_list[stock_idx];
+                const std::string& file_stock_code = stock_list[stock_idx];
                 double value;
                 if (token.empty() || token == "nan" || token == "NaN" || token == "NAN") {
                     value = NAN;
@@ -544,23 +565,16 @@ private:
                 }
 
                 // 为当前股票的GSeries设置指定bar_index的值
-                GSeries& series = stock_series[stock_code];
-                series.set(bar_index, value);  // 使用set方法（而非push）设置指定索引的值
+                // 检查这个股票是否在T_stock_list中
+                if (stock_series.count(file_stock_code)) {
+                    GSeries& series = stock_series[file_stock_code];
+                    series.set(bar_index, value);  // 现在序列大小正确，可以设置值
+                }
                 stock_idx++;
             }
         }
 
         gzclose(gz_file);
-
-        // 4. 调整所有GSeries的大小（确保长度一致），并通过set_his_series存入BaseSeriesHolder
-        for (auto& [stock_code, series] : stock_series) {
-            if (max_bar_index >= 0) {
-                series.resize(max_bar_index + 1);  // 确保序列长度覆盖所有bar_index
-            }
-            // 调用公有方法set_his_series，避免访问私有成员HisBarSeries
-            // 假设his_day_index=5对应历史数据（根据实际逻辑调整）
-            // out_holder.set_his_series(indicator_name, 5, series); // This line is removed as per new_code
-        }
 
         return true;
     }

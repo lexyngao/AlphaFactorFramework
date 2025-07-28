@@ -81,11 +81,12 @@ private:
         }
     }
 
-    // 时间触发线程工作函数
+    // 时间触发线程工作函数（已废弃，现在通过Time事件触发）
     void timer_worker() {
         while (timer_running_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(time_interval_ms_));
-            onTime();  // 触发因子计算
+            // 现在通过Time事件触发，不再使用定时器
+            // onTime();  // 触发因子计算
         }
     }
 
@@ -262,7 +263,7 @@ public:
     }
 
     // 时间触发因子计算
-    void onTime() {
+    void onTime(uint64_t timestamp) {
         // 获取所有Indicator的存储数据
         std::unordered_map<std::string, BarSeriesHolder*> bar_runners;
         {
@@ -275,24 +276,15 @@ public:
             }
         }
 
-        // 计算当前时间桶索引
-        // 我们需要从当前处理的Time事件中获取时间戳来计算正确的时间桶
-        // 由于onTime没有时间戳参数，我们需要通过其他方式获取
-        int ti = -1;
+        // 根据时间戳计算5分钟时间桶索引（Factor固定为5分钟频率）
+        int ti = calculate_time_bucket(timestamp, Frequency::F5MIN);
         
-        // 方法：从第一个Factor的频率来计算当前应该处理的时间桶
-        if (!factors_.empty()) {
-            // Factor固定为5min频率，我们需要计算当前是第几个5min时间桶
-            // 这里需要根据实际的时间来计算，暂时使用一个递增的计数器
-            static int time_bucket_counter = 0;
-            ti = time_bucket_counter;
-            time_bucket_counter++;
-        }
-
         if (ti < 0) {
-            spdlog::warn("无法计算时间桶索引，跳过因子计算");
+            spdlog::warn("无法计算时间桶索引，跳过因子计算，timestamp: {}", timestamp);
             return;
         }
+
+        spdlog::debug("Time事件触发因子计算，timestamp: {}, ti: {}", timestamp, ti);
 
         // 提交因子计算任务
         {
@@ -318,6 +310,65 @@ public:
         task_cond_.notify_all();  // 唤醒所有线程处理因子计算
     }
 
+    // 计算时间桶索引（通用函数，支持不同频率）
+    int calculate_time_bucket(uint64_t timestamp, Frequency frequency) {
+        if (timestamp == 0) return -1;
+
+        // 转换为北京时间
+        int64_t utc_sec = timestamp / 1000000000;
+        int64_t beijing_sec = utc_sec + 8 * 3600;  // UTC + 8小时 = 北京时间
+        int64_t beijing_seconds_in_day = beijing_sec % 86400;
+        int hour = static_cast<int>(beijing_seconds_in_day / 3600);
+        int minute = static_cast<int>((beijing_seconds_in_day % 3600) / 60);
+        int second = static_cast<int>(beijing_seconds_in_day % 60);
+        int total_minutes = hour * 60 + minute;
+
+        // 交易时间
+        const int morning_start = 9 * 60 + 30;   // 9:30
+        const int morning_end = 11 * 60 + 30;    // 11:30
+        const int afternoon_start = 13 * 60;     // 13:00
+        const int afternoon_end = 15 * 60;       // 15:00
+
+        bool is_morning = (total_minutes >= morning_start && total_minutes < morning_end);
+        bool is_afternoon = (total_minutes >= afternoon_start && total_minutes < afternoon_end);
+        if (!is_morning && !is_afternoon) return -1;
+
+        int seconds_since_open = 0;
+        if (is_morning) {
+            seconds_since_open = (total_minutes - morning_start) * 60 + second;
+        } else {
+            seconds_since_open = (morning_end - morning_start) * 60 // 上午总秒数
+                                + (total_minutes - afternoon_start) * 60 + second;
+        }
+
+        // 根据频率计算时间桶长度和最大桶数
+        int bucket_len = 15; // 默认15s
+        int max_buckets = 960; // 默认15s的最大桶数
+        
+        switch (frequency) {
+            case Frequency::F15S: 
+                bucket_len = 15; 
+                max_buckets = 960;
+                break;
+            case Frequency::F1MIN: 
+                bucket_len = 60; 
+                max_buckets = 240;
+                break;
+            case Frequency::F5MIN: 
+                bucket_len = 300; 
+                max_buckets = 48;
+                break;
+            case Frequency::F30MIN: 
+                bucket_len = 1800; 
+                max_buckets = 8;
+                break;
+        }
+        
+        int ti = seconds_since_open / bucket_len;
+        if (ti < 0 || ti >= max_buckets) return -1;
+        return ti;
+    }
+
     // 统一更新入口（单线程调用，确保时序）
     void update(const MarketAllField& field) {
         // 单线程处理所有行情数据，保证时间顺序
@@ -332,7 +383,7 @@ public:
                 onTick(field.get_tick());
                 break;
             case MarketBufferType::Time:
-                onTime();
+                onTime(field.get_time_trigger());
                 break;
             default:
                 spdlog::warn("未知数据类型: {}", static_cast<int>(field.type));

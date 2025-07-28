@@ -1139,6 +1139,8 @@ protected:
     const Frequency frequency_ = Frequency::F5MIN;  // 因子固定为5分钟频率
     // 存储结构：key为时间bar索引（如9:35为0），内层key为因子名
     std::map<int, std::map<std::string, GSeries>> factor_storage;
+    // 新增：存储依赖的indicators
+    std::vector<const Indicator*> dependent_indicators_;
 
 public:
     Factor(std::string name, std::string id, std::string path)
@@ -1179,6 +1181,59 @@ public:
     const std::map<int, std::map<std::string, GSeries>>& get_storage() const {
         return factor_storage;
     }
+    
+    // 新增：设置依赖的indicators
+    void set_dependent_indicators(const std::vector<const Indicator*>& indicators) {
+        dependent_indicators_ = indicators;
+    }
+    
+    // 新增：获取依赖的indicators
+    const std::vector<const Indicator*>& get_dependent_indicators() const {
+        return dependent_indicators_;
+    }
+    
+    // 新增：根据indicator名称获取indicator
+    const Indicator* get_indicator_by_name(const std::string& indicator_name) const {
+        for (const auto& indicator : dependent_indicators_) {
+            if (indicator && indicator->name() == indicator_name) {
+                return indicator;
+            }
+        }
+        return nullptr;
+    }
 };
+
+// 计算频率转换比例（indicator频率到factor频率）
+inline int get_frequency_ratio(Frequency indicator_freq, Frequency factor_freq) {
+    int indicator_seconds = 0;
+    int factor_seconds = 0;
+    
+    // 获取indicator频率的秒数
+    switch (indicator_freq) {
+        case Frequency::F15S: indicator_seconds = 15; break;
+        case Frequency::F1MIN: indicator_seconds = 60; break;
+        case Frequency::F5MIN: indicator_seconds = 300; break;
+        case Frequency::F30MIN: indicator_seconds = 1800; break;
+    }
+    
+    // 获取factor频率的秒数
+    switch (factor_freq) {
+        case Frequency::F15S: factor_seconds = 15; break;
+        case Frequency::F1MIN: factor_seconds = 60; break;
+        case Frequency::F5MIN: factor_seconds = 300; break;
+        case Frequency::F30MIN: factor_seconds = 1800; break;
+    }
+    
+    // 计算比例（factor频率 / indicator频率）
+    return factor_seconds / indicator_seconds;
+}
+
+// 计算时间桶映射范围（从factor时间桶映射到indicator时间桶范围）
+inline std::pair<int, int> get_time_bucket_range(int factor_ti, Frequency indicator_freq, Frequency factor_freq) {
+    int ratio = get_frequency_ratio(indicator_freq, factor_freq);
+    int start_index = factor_ti * ratio;
+    int end_index = start_index + ratio - 1;
+    return {start_index, end_index};
+}
 
 #endif //ALPHAFACTORFRAMEWORK_DATA_STRUCTURES_H

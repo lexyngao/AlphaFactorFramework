@@ -90,19 +90,31 @@ public:
         // 重新排序所有数据（包括Time事件）
         DataLoader().sort_market_datas(all_data_with_time);
         
-        // 按股票分组数据
+        // 按股票分组数据（包括Time事件）
         std::unordered_map<std::string, std::vector<MarketAllField>> stock_data;
-        std::vector<MarketAllField> time_events;
         
+        // 初始化所有股票的数据容器
+        for (const auto& stock : stock_list_) {
+            stock_data[stock] = std::vector<MarketAllField>();
+        }
+        
+        // 分发数据到各股票
         for (const auto& field : all_data_with_time) {
             if (field.type == MarketBufferType::Time) {
-                time_events.push_back(field);
+                // Time事件需要所有股票都能访问，复制到每个股票的数据中
+                for (auto& [symbol, data] : stock_data) {
+                    data.push_back(field);
+                }
             } else {
+                // 股票数据直接添加到对应股票
                 stock_data[field.symbol].push_back(field);
             }
         }
         
-        spdlog::info("数据分组完成: {}只股票, {}个Time事件", stock_data.size(), time_events.size());
+        spdlog::info("数据分组完成: {}只股票，每只股票包含Time事件", stock_data.size());
+        
+        // 设置factor的依赖indicators
+        setup_factor_dependencies();
         
         // 多线程处理：每个股票一个线程，保持单股票内的串行
         std::vector<std::thread> stock_threads;
@@ -123,13 +135,20 @@ public:
             thread.join();
         }
         
-        // 串行处理Time事件（确保在所有股票数据处理完成后）
-        spdlog::info("开始处理 {} 个Time事件", time_events.size());
-        for (const auto& time_event : time_events) {
-            engine_.update(time_event);
-        }
-        
         spdlog::info("引擎运行完成");
+    }
+
+    void setup_factor_dependencies() {
+        spdlog::info("设置factor依赖关系...");
+        for (auto& [factor_name, factor] : factor_map_) {
+            // 收集所有indicators作为依赖
+            std::vector<const Indicator*> dependent_indicators;
+            for (auto& [indicator_name, indicator] : indicator_map_) {
+                dependent_indicators.push_back(indicator.get());
+            }
+            factor->set_dependent_indicators(dependent_indicators);
+            spdlog::debug("Factor[{}]设置了{}个indicator依赖", factor_name, dependent_indicators.size());
+        }
     }
 
     void save_all_results() {
