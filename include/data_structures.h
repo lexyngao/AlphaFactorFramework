@@ -1203,10 +1203,10 @@ public:
     }
 };
 
-// 计算频率转换比例（indicator频率到factor频率）
-inline int get_frequency_ratio(Frequency indicator_freq, Frequency factor_freq) {
+// 计算时间桶映射范围（从factor时间桶映射到indicator时间桶范围）
+inline std::pair<int, int> get_time_bucket_range(int factor_ti, Frequency indicator_freq, Frequency factor_freq) {
     int indicator_seconds = 0;
-    int factor_seconds = 0;
+    int factor_seconds = 300; //factor的间隔固定是5min，对应300s
     
     // 获取indicator频率的秒数
     switch (indicator_freq) {
@@ -1215,25 +1215,22 @@ inline int get_frequency_ratio(Frequency indicator_freq, Frequency factor_freq) 
         case Frequency::F5MIN: indicator_seconds = 300; break;
         case Frequency::F30MIN: indicator_seconds = 1800; break;
     }
-    
-    // 获取factor频率的秒数
-    switch (factor_freq) {
-        case Frequency::F15S: factor_seconds = 15; break;
-        case Frequency::F1MIN: factor_seconds = 60; break;
-        case Frequency::F5MIN: factor_seconds = 300; break;
-        case Frequency::F30MIN: factor_seconds = 1800; break;
-    }
-    
-    // 计算比例（factor频率 / indicator频率）
-    return factor_seconds / indicator_seconds;
-}
 
-// 计算时间桶映射范围（从factor时间桶映射到indicator时间桶范围）
-inline std::pair<int, int> get_time_bucket_range(int factor_ti, Frequency indicator_freq, Frequency factor_freq) {
-    int ratio = get_frequency_ratio(indicator_freq, factor_freq);
-    int start_index = factor_ti * ratio;
-    int end_index = start_index + ratio - 1;
-    return {start_index, end_index};
+    // 计算比例（indicator频率 / factor频率）
+    int ratio = indicator_seconds / factor_seconds;
+    
+    if (ratio >= 1) {
+        // indicator频率 >= factor频率（如30min indicator vs 5min factor）
+        // 一个indicator时间桶对应多个factor时间桶
+        int indicator_ti = factor_ti / ratio;
+        return {indicator_ti, indicator_ti};  // 返回同一个indicator时间桶
+    } else {
+        // indicator频率 < factor频率（如1min indicator vs 5min factor）
+        // 一个factor时间桶对应多个indicator时间桶
+        int start_index = factor_ti * (factor_seconds / indicator_seconds);
+        int end_index = start_index + (factor_seconds / indicator_seconds) - 1;
+        return {start_index, end_index};
+    }
 }
 
 #endif //ALPHAFACTORFRAMEWORK_DATA_STRUCTURES_H
