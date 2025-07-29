@@ -500,6 +500,13 @@ private:
             return false;
         }
         std::string header = buffer;
+        // 去除可能的换行符
+        if (!header.empty() && header.back() == '\n') {
+            header.pop_back();
+        }
+        if (!header.empty() && header.back() == '\r') {
+            header.pop_back();
+        }
         std::stringstream ss(header);
         std::string token;
         while (std::getline(ss, token, ',')) {
@@ -549,10 +556,10 @@ private:
             if (token.empty()) continue;
             int bar_index = std::stoi(token);
 
-            // 解析每个股票的数值
+                        // 解析每个股票的数值
             size_t stock_idx = 0;
             while (std::getline(line_ss, token, ',')) {
-                if (stock_idx >= stock_list.size()) break;
+                if (stock_idx >= stock_list.size()) break;  // 改为 > ：list和stock_idx不同
                 const std::string& file_stock_code = stock_list[stock_idx];
                 double value;
                 if (token.empty() || token == "nan" || token == "NaN" || token == "NAN") {
