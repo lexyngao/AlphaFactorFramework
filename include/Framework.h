@@ -22,11 +22,34 @@ public:
     void register_indicators_factors(const std::vector<ModuleConfig>& modules) {
         for (const auto& module : modules) {
             if (module.handler == "Indicator") {
-                auto indicator = std::make_shared<VolumeIndicator>(module); // 可扩展为工厂
+                std::shared_ptr<Indicator> indicator;
+                
+                // 根据id创建对应的Indicator实例
+                if (module.id == "VolumeIndicator") {
+                    indicator = std::make_shared<VolumeIndicator>(module);
+                } else if (module.id == "AmountIndicator") {
+                    indicator = std::make_shared<AmountIndicator>(module);
+                } else {
+                    spdlog::error("未知的Indicator类型: {}", module.id);
+                    continue;
+                }
+                
                 engine_.add_indicator(module.name, indicator);
                 indicator_map_[module.name] = indicator;
+                
             } else if (module.handler == "Factor") {
-                auto factor = std::make_shared<VolumeFactor>(module); // 可扩展为工厂
+                std::shared_ptr<Factor> factor;
+                
+                // 根据id创建对应的Factor实例
+                if (module.id == "VolumeFactor") {
+                    factor = std::make_shared<VolumeFactor>(module);
+                } else if (module.id == "PriceFactor") {
+                    factor = std::make_shared<PriceFactor>(module);
+                } else {
+                    spdlog::error("未知的Factor类型: {}", module.id);
+                    continue;
+                }
+                
                 engine_.add_factor(factor);
                 factor_map_[module.name] = factor;
             }

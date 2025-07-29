@@ -525,6 +525,7 @@ struct TradeData {
     char cancel_flag = '\0';  // N:正常, C:撤销
     double price = 0.0;
     double volume = 0.0;
+    double trade_money = 0.0;  // 成交金额（TradeMoney字段）
     uint64_t real_time = 0;
     int64_t appl_seq_num = 0;
     std::string symbol;        // 股票代码（Symbol）
@@ -1158,6 +1159,39 @@ public:
             int ti
     ) {
         spdlog::critical("Factor::definition not implement yet!!");
+        return GSeries();
+    }
+
+    // 新增：更灵活的definition方法，可以访问所有indicator的存储
+    virtual GSeries definition_with_indicators(
+            const std::unordered_map<std::string, std::shared_ptr<Indicator>>& indicators,
+            const std::vector<std::string>& sorted_stock_list,
+            int ti
+    ) {
+        // 默认实现：转换为bar_runners格式调用原有方法
+        std::unordered_map<std::string, BarSeriesHolder*> bar_runners;
+        for (const auto& [ind_name, indicator] : indicators) {
+            const auto& storage = indicator->get_storage();
+            for (const auto& [stock, holder] : storage) {
+                if (bar_runners.find(stock) == bar_runners.end()) {
+                    bar_runners[stock] = holder.get();
+                }
+            }
+        }
+        return definition(bar_runners, sorted_stock_list, ti);
+    }
+
+    // 新增：使用访问器模式的definition方法
+    virtual GSeries definition_with_accessor(
+            std::function<std::shared_ptr<Indicator>(const std::string&)> get_indicator,
+            const std::vector<std::string>& sorted_stock_list,
+            int ti
+    ) {
+        // 默认实现：调用原有的definition方法
+        std::unordered_map<std::string, BarSeriesHolder*> bar_runners;
+        
+        // 这里需要子类重写，因为基类不知道需要哪些indicator
+        spdlog::warn("Factor::definition_with_accessor需要子类重写");
         return GSeries();
     }
 

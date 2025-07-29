@@ -185,6 +185,7 @@ public:
     void add_indicator(const std::string& name, std::shared_ptr<Indicator> ind) {
         std::lock_guard<std::mutex> lock(queue_mutex_);  // 避免并发修改
         indicators_[name] = ind;
+        spdlog::info("添加指标到engine: {}", name);
     }
 
     void add_factor(std::shared_ptr<Factor> factor) {
@@ -264,18 +265,6 @@ public:
 
     // 时间触发因子计算
     void onTime(uint64_t timestamp) {
-        // 获取所有Indicator的存储数据
-        std::unordered_map<std::string, BarSeriesHolder*> bar_runners;
-        {
-            std::lock_guard<std::mutex> lock(queue_mutex_);
-            for (const auto& [name, indicator] : indicators_) {
-                const auto& storage = indicator->get_storage();
-                for (const auto& [stock, holder] : storage) {
-                    bar_runners[stock] = holder.get();
-                }
-            }
-        }
-
         // 根据时间戳计算5分钟时间桶索引（Factor固定为5分钟频率）
         int ti = calculate_time_bucket(timestamp, Frequency::F5MIN);
         
@@ -291,16 +280,24 @@ public:
             std::lock_guard<std::mutex> lock(queue_mutex_);
             for (auto& [factor_name, factor] : factors_) {
                 auto factor_ptr = factor;  // 创建局部副本避免捕获冲突
-                auto bar_runners_copy = bar_runners;  // 创建bar_runners的副本
-                task_queue_.push([this, factor_ptr, bar_runners_copy, ti]() {
+                task_queue_.push([this, factor_ptr, ti]() {
                     try {
-                        // 调用因子的definition函数
-                        GSeries result = factor_ptr->definition(bar_runners_copy, stock_list_, ti);
+                        // 让Factor直接访问它需要的indicator
+                        // 通过lambda捕获this，让Factor能够按需访问indicator
+                        auto get_indicator = [this](const std::string& name) -> std::shared_ptr<Indicator> {
+                            std::lock_guard<std::mutex> lock(queue_mutex_);
+                            auto it = indicators_.find(name);
+                            return (it != indicators_.end()) ? it->second : nullptr;
+                        };
+                        
+                        // 调用因子的definition函数，传递indicator访问器
+                        GSeries result = factor_ptr->definition_with_accessor(get_indicator, stock_list_, ti);
                         
                         // 将结果存储到factor的存储结构中
                         factor_ptr->set_factor_result(ti, result);
                         
-                        spdlog::debug("因子[{}]计算完成，时间桶: {}", factor_ptr->get_name(), ti);
+                        spdlog::debug("因子[{}]计算完成，时间桶: {}, 有效数据: {}/{}", 
+                                     factor_ptr->get_name(), ti, result.get_valid_num(), result.get_size());
                     } catch (const std::exception& e) {
                         spdlog::error("因子[{}]计算失败: {}", factor_ptr->get_name(), e.what());
                     }

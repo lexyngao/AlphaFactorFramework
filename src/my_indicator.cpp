@@ -88,3 +88,99 @@ BarSeriesHolder* VolumeIndicator::get_bar_series_holder(const std::string& stock
     }
     return nullptr;
 }
+
+// AmountIndicator实现
+void AmountIndicator::Calculate(const SyncTickData& tick_data) {
+    auto thread_id = std::this_thread::get_id();
+    std::ostringstream oss;
+    oss << thread_id;
+    std::string thread_id_str = oss.str();
+
+    spdlog::info("[Calculate-Enter] symbol={} thread_id={}", tick_data.symbol, thread_id_str);
+
+    auto it = storage_.find(tick_data.symbol);
+    if (it == storage_.end()) {
+        spdlog::warn("[Calculate] symbol={} not found in storage_ (thread_id={})", tick_data.symbol, thread_id_str);
+        return;
+    }
+    BarSeriesHolder* holder = it->second.get();
+
+    int ti = get_time_bucket_index(tick_data.tick_data.real_time);
+    if (ti < 0) {
+        spdlog::debug("[Calculate] symbol={} invalid ti (thread_id={}) real_time={}", 
+                     tick_data.symbol, thread_id_str, tick_data.tick_data.real_time);
+        return;
+    }
+    
+    // 修复：ti已经是正确的桶索引，直接使用
+    int bar_index = ti;
+
+    // 提前定义变量，避免重复定义
+    std::string key = "amount";
+    // T日数据现在存储在MBarSeries中
+    GSeries series = holder->get_m_bar(key);
+    if (series.empty()) {
+        series = GSeries();
+        series.resize(get_bars_per_day());
+        spdlog::debug("[Calculate] symbol={} new GSeries allocated (thread_id={})", tick_data.symbol, thread_id_str);
+    }
+
+    double amount = 0.0;
+    
+    // 1. 优先使用成交数据中的TradeMoney字段（如果有的话）
+    for (const auto& trans : tick_data.trans) {
+        // 注意：这里需要根据实际的数据结构调整
+        // 如果TradeData中有trade_money字段，直接使用
+        // 否则使用 volume * price 计算
+        if (trans.trade_money > 0.0) {
+            amount += trans.trade_money;  // 使用TradeMoney字段
+            spdlog::debug("[Calculate] symbol={} using TradeMoney: {}", tick_data.symbol, trans.trade_money);
+        } else {
+            amount += trans.volume * trans.price;  // 使用volume * price计算
+            spdlog::debug("[Calculate] symbol={} calculated amount: {} * {} = {}", 
+                         tick_data.symbol, trans.volume, trans.price, trans.volume * trans.price);
+        }
+    }
+    
+    // 2. 如果成交数据为空，使用快照数据中的TotalValueTraded
+    if (amount == 0.0 && tick_data.tick_data.total_value_traded > 0.0) {
+        amount = tick_data.tick_data.total_value_traded;
+        spdlog::debug("[Calculate] symbol={} using snapshot TotalValueTraded: {}", tick_data.symbol, amount);
+    }
+    
+    // 3. 如果还是没有数据，使用快照数据中的volume * last_price
+    if (amount == 0.0 && tick_data.tick_data.volume > 0.0 && tick_data.tick_data.last_price > 0.0) {
+        amount = tick_data.tick_data.volume * tick_data.tick_data.last_price;
+        spdlog::debug("[Calculate] symbol={} using snapshot volume * last_price: {} * {} = {}", 
+                     tick_data.symbol, tick_data.tick_data.volume, tick_data.tick_data.last_price, amount);
+    }
+    
+    // 4. 对于30分钟频率，需要累积该桶内的所有成交金额
+    // 获取当前桶的已有数据，进行累加
+    double existing_amount = series.get(bar_index);
+    if (!std::isnan(existing_amount)) {
+        amount += existing_amount;
+        spdlog::debug("[Calculate] symbol={} accumulated amount: {} + {} = {}", 
+                     tick_data.symbol, existing_amount, amount - existing_amount, amount);
+    }
+    
+    // 5. 如果还是没有数据，记录警告
+    if (amount == 0.0) {
+        spdlog::debug("[Calculate] symbol={} no amount data found", tick_data.symbol);
+    }
+
+    spdlog::debug("[Calculate] symbol={} ti={} bar_index={} amount={} (thread_id={})", tick_data.symbol, ti, bar_index, amount, thread_id_str);
+
+    series.set(bar_index, amount);
+    holder->offline_set_m_bar(key, series);
+
+    spdlog::info("[Calculate-Exit] symbol={} thread_id={}", tick_data.symbol, thread_id_str);
+}
+
+BarSeriesHolder* AmountIndicator::get_bar_series_holder(const std::string& stock_code) const {
+    auto it = storage_.find(stock_code);
+    if (it != storage_.end()) {
+        return it->second.get();  // 返回unique_ptr管理的原始指针
+    }
+    return nullptr;
+}

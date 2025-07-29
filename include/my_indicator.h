@@ -27,4 +27,21 @@ private:
 
 };
 
+// 成交金额指标
+class AmountIndicator : public Indicator {
+public:
+    // 让AmountIndicator支持ModuleConfig构造
+    explicit AmountIndicator(const ModuleConfig& module) : Indicator(module) {}
+
+    // 重写计算接口
+    void Calculate(const SyncTickData& tick_data) override;
+    BarSeriesHolder* get_bar_series_holder(const std::string& stock_code) const;
+
+private:
+
+
+
+
+};
+
 #endif //ALPHAFACTORFRAMEWORK_MY_INDICATOR_H

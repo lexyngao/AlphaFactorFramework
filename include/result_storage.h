@@ -164,7 +164,8 @@ public:
         std::vector<std::string> T_stock_list = load_stock_list(universe, T_date);
         spdlog::info("T日股票列表大小: {}", T_stock_list.size());
         if (T_stock_list.empty()) {
-            spdlog::error("T日[{}]股票列表为空，无法继续", T_date);
+            spdlog::error("指标{}T日[{}]股票列表为空，无法继续",indicator->name()
+                          , T_date);
             return false;
         }
 
@@ -174,10 +175,10 @@ public:
             indicator, module, T_date, T_stock_list
         );
         if (T_exists) {
-            spdlog::info("T日[{}]指标已存在，直接复用", T_date);
+            spdlog::info("指标{}T日[{}]指标已存在，直接复用",indicator->name(), T_date);
             indicator->mark_as_calculated();  // 标记为已计算
         } else {
-            spdlog::info("T日[{}]指标不存在，将在计算阶段生成", T_date);
+            spdlog::info("指标{}T日[{}]指标不存在，将在计算阶段生成",indicator->name(), T_date);
         }
 
         // 步骤3：加载历史指标（T-pre_days ~ T-1日）

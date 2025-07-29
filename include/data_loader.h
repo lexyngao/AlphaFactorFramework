@@ -229,10 +229,13 @@ public:
                 // 7. 成交量（TradeQty）→ volume
                 trade.volume = std::stod(tokens[14]);  // tokens[14]是TradeQty
 
-                // 8. 时间戳（TimeStamp）→ real_time（转换为秒级时间戳）
+                // 8. 成交金额（TradeMoney）→ trade_money
+                trade.trade_money = std::stod(tokens[15]);  // tokens[15]是TradeMoney
+
+                // 9. 时间戳（TimeStamp）→ real_time（转换为秒级时间戳）
                 trade.real_time = parse_datetime_ns(tokens[1]);  // 复用之前的时间解析函数
 
-                // 9. 应用序列号（ApplSeqNum）→ appl_seq_num
+                // 10. 应用序列号（ApplSeqNum）→ appl_seq_num
                 trade.appl_seq_num = std::stoll(tokens[20]);  // tokens[20]是ApplSeqNum
 
                 //其他可能指标
