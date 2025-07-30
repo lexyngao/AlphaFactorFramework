@@ -1240,7 +1240,7 @@ public:
 // 计算时间桶映射范围（从factor时间桶映射到indicator时间桶范围）
 inline std::pair<int, int> get_time_bucket_range(int factor_ti, Frequency indicator_freq, Frequency factor_freq) {
     int indicator_seconds = 0;
-    int factor_seconds = 300; //factor的间隔固定是5min，对应300s
+    int factor_seconds = 0;
     
     // 获取indicator频率的秒数
     switch (indicator_freq) {
@@ -1248,6 +1248,14 @@ inline std::pair<int, int> get_time_bucket_range(int factor_ti, Frequency indica
         case Frequency::F1MIN: indicator_seconds = 60; break;
         case Frequency::F5MIN: indicator_seconds = 300; break;
         case Frequency::F30MIN: indicator_seconds = 1800; break;
+    }
+    
+    // 获取factor频率的秒数
+    switch (factor_freq) {
+        case Frequency::F15S: factor_seconds = 15; break;
+        case Frequency::F1MIN: factor_seconds = 60; break;
+        case Frequency::F5MIN: factor_seconds = 300; break;
+        case Frequency::F30MIN: factor_seconds = 1800; break;
     }
 
     // 计算比例（indicator频率 / factor频率）

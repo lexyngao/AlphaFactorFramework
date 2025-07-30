@@ -1,18 +1,20 @@
 #ifndef ALPHAFACTORFRAMEWORK_CAL_ENGINE_H
 #define ALPHAFACTORFRAMEWORK_CAL_ENGINE_H
 
+#include "data_structures.h"
+#include "config.h"
+#include "my_indicator.h"  // 添加这行以支持VolumeIndicator和AmountIndicator
+#include <unordered_map>
 #include <vector>
-#include <string>
+#include <queue>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-#include <queue>
 #include <functional>
-#include <atomic>
-#include <unordered_map>
+#include <future>
 #include <memory>
-#include <spdlog/spdlog.h>
-#include "data_structures.h"
+#include <atomic>
+#include "spdlog/spdlog.h"
 
 // 工具类：用于在作用域结束时执行指定动作（模拟finally）
 class FinalAction {
@@ -223,6 +225,20 @@ public:
             spdlog::warn("未找到指标[{}]", indicator_name);
         }
     }
+    
+    // 新增：重置差分存储（用于每天开始时重置）
+    void reset_diff_storage() {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        for (auto& [ind_name, indicator] : indicators_) {
+            // 尝试转换为VolumeIndicator或AmountIndicator并重置差分存储
+            if (auto volume_ind = std::dynamic_pointer_cast<VolumeIndicator>(indicator)) {
+                volume_ind->reset_diff_storage();
+            } else if (auto amount_ind = std::dynamic_pointer_cast<AmountIndicator>(indicator)) {
+                amount_ind->reset_diff_storage();
+            }
+        }
+        spdlog::info("重置所有指标的差分存储");
+    }
 
     // 重构：处理订单（直接添加到对应股票的 SyncTickData）
     void onOrder(const OrderData& order) {
@@ -265,8 +281,8 @@ public:
 
     // 时间触发因子计算
     void onTime(uint64_t timestamp) {
-        // 根据时间戳计算5分钟时间桶索引（Factor固定为5分钟频率）
-        int ti = calculate_time_bucket(timestamp, Frequency::F5MIN);
+        // 根据时间戳计算5分钟时间桶索引（Factor固定为5分钟频率） #TODO：for debug
+        int ti = calculate_time_bucket(timestamp, Frequency::F1MIN);
         
         if (ti < 0) {
             spdlog::warn("无法计算时间桶索引，跳过因子计算，timestamp: {}", timestamp);

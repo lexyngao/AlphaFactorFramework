@@ -31,7 +31,8 @@ GSeries VolumeFactor::definition(
     
     // 使用通用的频率匹配函数计算时间桶映射范围
     // Factor固定为5分钟频率，Indicator频率动态获取
-    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, indicator_freq, Frequency::F5MIN);
+//    TODO：临时调整Factor频率
+    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, indicator_freq, Frequency::F1MIN);
     
     spdlog::debug("因子计算: ti={}, 映射到{}频率范围: [{}, {}]", ti, static_cast<int>(indicator_freq), start_indicator_index, end_indicator_index);
     
@@ -105,7 +106,7 @@ GSeries VolumeFactor::definition_with_indicators(
     Frequency indicator_freq = volume_indicator->get_frequency();
     
     // 使用通用的频率匹配函数计算时间桶映射范围
-    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, indicator_freq, Frequency::F5MIN);
+    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, indicator_freq, Frequency::F1MIN);
     
     spdlog::debug("VolumeFactor计算: ti={}, 映射到{}频率范围: [{}, {}]", 
                   ti, static_cast<int>(indicator_freq), start_indicator_index, end_indicator_index);
@@ -168,7 +169,7 @@ GSeries VolumeFactor::definition_with_accessor(
     Frequency indicator_freq = volume_indicator->get_frequency();
     
     // 使用通用的频率匹配函数计算时间桶映射范围
-    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, indicator_freq, Frequency::F5MIN);
+    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, indicator_freq, Frequency::F1MIN);
     
     spdlog::debug("VolumeFactor计算: ti={}, 映射到{}频率范围: [{}, {}]", 
                   ti, static_cast<int>(indicator_freq), start_indicator_index, end_indicator_index);
@@ -327,7 +328,7 @@ GSeries PriceFactor::definition_with_indicators(
     }
     
     // 使用通用的频率匹配函数计算时间桶映射范围
-    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, amount_freq, Frequency::F5MIN);
+    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, amount_freq, Frequency::F1MIN);
     
     spdlog::debug("PriceFactor计算: ti={}, 映射到{}频率范围: [{}, {}]", 
                   ti, static_cast<int>(amount_freq), start_indicator_index, end_indicator_index);
@@ -412,7 +413,7 @@ GSeries PriceFactor::definition_with_accessor(
     }
     
     // 使用通用的频率匹配函数计算时间桶映射范围
-    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, amount_freq, Frequency::F5MIN);
+    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, amount_freq, Frequency::F1MIN);
     
     spdlog::debug("PriceFactor计算: ti={}, 映射到{}频率范围: [{}, {}]", 
                   ti, static_cast<int>(amount_freq), start_indicator_index, end_indicator_index);

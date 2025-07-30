@@ -85,75 +85,69 @@ public:
     }
 
     void run_engine(const std::vector<MarketAllField>& all_tick_datas) {
-        // 生成Time触发事件
-        std::vector<MarketAllField> all_data_with_time = all_tick_datas;
+        spdlog::info("开始运行引擎，数据量: {}", all_tick_datas.size());
         
-        // 只生成Factor需要的Time事件（5min间隔）
-        std::set<int> time_intervals;
-        if (!factor_map_.empty()) {
-            time_intervals.insert(300);  // Factor固定为5min
-        }
+        // 重置所有指标的计算状态和差分存储
+        engine_.reset_all_indicator_status();
+        engine_.reset_diff_storage();
         
-        // 为每个时间间隔生成Time事件
-        for (int interval_seconds : time_intervals) {
-            // 计算交易时间内的所有时间点
-            std::vector<uint64_t> time_points = generate_time_points(interval_seconds, config_.calculate_date);
-            
-            for (uint64_t time_point : time_points) {
-                MarketAllField time_field(
-                    MarketBufferType::Time,
-                    "TIME",  // 股票代码设为TIME
-                    time_point,  // 时间戳
-                    0  // 序列号
-                );
-                all_data_with_time.push_back(time_field);
-            }
-        }
-        
-        // 重新排序所有数据（包括Time事件）
-        DataLoader().sort_market_datas(all_data_with_time);
-        
-        // 按股票分组数据（包括Time事件）
-        std::unordered_map<std::string, std::vector<MarketAllField>> stock_data;
-        
-        // 初始化所有股票的数据容器
-        for (const auto& stock : stock_list_) {
-            stock_data[stock] = std::vector<MarketAllField>();
-        }
-        
-        // 分发数据到各股票
-        for (const auto& field : all_data_with_time) {
-            if (field.type == MarketBufferType::Time) {
-                // Time事件需要所有股票都能访问，复制到每个股票的数据中
-                for (auto& [symbol, data] : stock_data) {
-                    data.push_back(field);
-                }
-            } else {
-                // 股票数据直接添加到对应股票
-                stock_data[field.symbol].push_back(field);
-            }
-        }
-        
-        spdlog::info("数据分组完成: {}只股票，每只股票包含Time事件", stock_data.size());
-        
-        // 设置factor的依赖indicators
+        // 设置factor依赖关系
         setup_factor_dependencies();
         
-        // 多线程处理：每个股票一个线程，保持单股票内的串行
-        std::vector<std::thread> stock_threads;
+        // 生成时间事件并插入到数据流中
+        std::vector<MarketAllField> all_data_with_time = all_tick_datas;
+
+        // 生成5分钟间隔的时间事件（Factor固定为5分钟频率） #TODO：为了debug
+        std::vector<uint64_t> time_points = generate_time_points(60, config_.calculate_date);  // 300秒 = 5分钟
+        spdlog::info("生成了 {} 个时间事件", time_points.size());
         
-        // 处理股票数据
-        for (const auto& [symbol, data] : stock_data) {
-            stock_threads.emplace_back([this, symbol = symbol, data = data]() {
-                spdlog::debug("开始处理股票 {} 的 {} 条数据", symbol, data.size());
-                for (const auto& field : data) {
-                    engine_.update(field);
+        // 将时间事件插入到数据流中
+        for (uint64_t timestamp : time_points) {
+            MarketAllField time_field(
+                MarketBufferType::Time,
+                "",  // 时间事件不需要股票代码
+                timestamp,
+                0    // 时间事件的序列号设为0
+            );
+            time_field.time_trigger = timestamp;
+            all_data_with_time.push_back(time_field);
+        }
+        
+        // 重新排序所有数据（包括时间事件）
+        DataLoader::sort_market_datas(all_data_with_time);
+        spdlog::info("数据重新排序完成，总数据量: {}", all_data_with_time.size());
+        
+        // 按股票分组处理数据，将时间事件分发到各股票
+        std::unordered_map<std::string, std::vector<MarketAllField>> stock_data_map;
+        for (const auto& data : all_data_with_time) {
+            if (data.type == MarketBufferType::Time) {
+                // 时间事件分发到所有股票
+                for (const auto& stock : stock_list_) {
+                    MarketAllField time_field = data;
+                    time_field.symbol = stock;  // 为每个股票设置股票代码
+                    stock_data_map[stock].push_back(time_field);
                 }
-                spdlog::debug("完成处理股票 {}", symbol);
+            } else {
+                // 普通数据按股票分组
+                stock_data_map[data.symbol].push_back(data);
+            }
+        }
+        
+        spdlog::info("数据分组完成，共{}只股票", stock_data_map.size());
+        
+        // 为每只股票创建独立线程处理
+        std::vector<std::thread> stock_threads;
+        for (const auto& [stock, stock_data] : stock_data_map) {
+            stock_threads.emplace_back([this, stock_code = stock, data = stock_data]() {
+                spdlog::info("开始处理股票{}的数据，共{}条", stock_code, data.size());
+                for (const auto& tick_data : data) {
+                    engine_.update(tick_data);
+                }
+                spdlog::info("股票{}数据处理完成", stock_code);
             });
         }
         
-        // 等待所有股票线程完成
+        // 等待所有线程完成
         for (auto& thread : stock_threads) {
             thread.join();
         }

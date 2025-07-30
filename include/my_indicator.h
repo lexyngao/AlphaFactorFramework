@@ -20,10 +20,13 @@ public:
     void Calculate(const SyncTickData& tick_data) override;
     BarSeriesHolder* get_bar_series_holder(const std::string& stock_code) const;
 
+    // 新增：重置差分存储
+    void reset_diff_storage();
+
 private:
-
-
-
+    // 存储每个股票的前一个累积值（用于差分计算）
+    std::unordered_map<std::string, double> prev_volume_map_;
+    std::unordered_map<std::string, double> prev_amount_map_;
 
 };
 
@@ -36,11 +39,14 @@ public:
     // 重写计算接口
     void Calculate(const SyncTickData& tick_data) override;
     BarSeriesHolder* get_bar_series_holder(const std::string& stock_code) const;
+    
+    // 新增：重置差分存储
+    void reset_diff_storage();
 
 private:
-
-
-
+    // 存储每个股票的前一个累积值（用于差分计算）
+    std::unordered_map<std::string, double> prev_volume_map_;
+    std::unordered_map<std::string, double> prev_amount_map_;
 
 };
 

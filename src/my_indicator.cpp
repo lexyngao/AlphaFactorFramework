@@ -33,12 +33,9 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
         return;
     }
     
-    // 修复：ti已经是正确的桶索引，直接使用
     int bar_index = ti;
 
-    // 提前定义变量，避免重复定义
     std::string key = "volume";
-    // T日数据现在存储在MBarSeries中
     GSeries series = holder->get_m_bar(key);
     if (series.empty()) {
         series = GSeries();
@@ -46,36 +43,48 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
         spdlog::debug("[Calculate] symbol={} new GSeries allocated (thread_id={})", tick_data.symbol, thread_id_str);
     }
 
-    double volume = 0.0;
+    // 按照notebook逻辑：对每个快照数据都计算差分，然后在时间桶内累加
+    double current_volume = tick_data.tick_data.volume;  // 当前累积成交量
+    double prev_volume = prev_volume_map_[tick_data.symbol];  // 前一个累积成交量
     
-    // 1. 计算成交数据中的成交量
-    for (const auto& trans : tick_data.trans) {
-        volume += trans.volume;
+    // 计算差分成交量（类似notebook中的 snap.acc_volume.diff()）
+    double volume_diff = std::numeric_limits<double>::quiet_NaN();  // 默认NaN
+    if (prev_volume > 0.0) {
+        volume_diff = current_volume - prev_volume;
+        spdlog::debug("[Calculate] symbol={} volume diff: {} - {} = {}", 
+                     tick_data.symbol, current_volume, prev_volume, volume_diff);
+    } else {
+        // 第一次计算，返回NaN（与pandas diff()行为一致）
+        volume_diff = std::numeric_limits<double>::quiet_NaN();
+        spdlog::debug("[Calculate] symbol={} first calculation, volume diff: NaN", 
+                     tick_data.symbol);
     }
     
-    // 2. 如果成交数据为空，使用快照数据中的成交量
-    if (volume == 0.0 && tick_data.tick_data.volume > 0.0) {
-        volume = tick_data.tick_data.volume;
-        spdlog::debug("[Calculate] symbol={} using snapshot volume: {}", tick_data.symbol, volume);
-    }
+    // 更新前一个累积值
+    prev_volume_map_[tick_data.symbol] = current_volume;
     
-    // 3. 对于30分钟频率，需要累积该桶内的所有成交量
-    // 获取当前桶的已有数据，进行累加
+    // 在时间桶内累加（类似notebook中的 groupby('belong_min').sum()）
     double existing_volume = series.get(bar_index);
-    if (!std::isnan(existing_volume)) {
-        volume += existing_volume;
+    if (!std::isnan(existing_volume) && !std::isnan(volume_diff)) {
+        volume_diff += existing_volume;
         spdlog::debug("[Calculate] symbol={} accumulated volume: {} + {} = {}", 
-                     tick_data.symbol, existing_volume, volume - existing_volume, volume);
+                     tick_data.symbol, existing_volume, volume_diff - existing_volume, volume_diff);
+    } else if (std::isnan(existing_volume) && !std::isnan(volume_diff)) {
+        // 如果existing是NaN但volume_diff不是NaN，直接使用volume_diff
+        spdlog::debug("[Calculate] symbol={} first valid volume in bucket: {}", 
+                     tick_data.symbol, volume_diff);
+    } else if (!std::isnan(existing_volume) && std::isnan(volume_diff)) {
+        // 如果volume_diff是NaN但existing不是NaN，保持existing
+        volume_diff = existing_volume;
+        spdlog::debug("[Calculate] symbol={} keeping existing volume: {}", 
+                     tick_data.symbol, volume_diff);
     }
-    
-    // 4. 如果还是没有数据，记录警告
-    if (volume == 0.0) {
-        spdlog::debug("[Calculate] symbol={} no volume data found", tick_data.symbol);
-    }
+    // 如果两者都是NaN，volume_diff保持NaN
 
-    spdlog::debug("[Calculate] symbol={} ti={} bar_index={} volume={} (thread_id={})", tick_data.symbol, ti, bar_index, volume, thread_id_str);
+    spdlog::debug("[Calculate] symbol={} ti={} bar_index={} volume_diff={} (thread_id={})", 
+                 tick_data.symbol, ti, bar_index, volume_diff, thread_id_str);
 
-    series.set(bar_index, volume);
+    series.set(bar_index, volume_diff);
     holder->offline_set_m_bar(key, series);
 
     spdlog::info("[Calculate-Exit] symbol={} thread_id={}", tick_data.symbol, thread_id_str);
@@ -87,6 +96,12 @@ BarSeriesHolder* VolumeIndicator::get_bar_series_holder(const std::string& stock
         return it->second.get();  // 返回unique_ptr管理的原始指针
     }
     return nullptr;
+}
+
+void VolumeIndicator::reset_diff_storage() {
+    prev_volume_map_.clear();
+    prev_amount_map_.clear();
+    spdlog::info("[VolumeIndicator] 重置差分存储");
 }
 
 // AmountIndicator实现
@@ -112,12 +127,9 @@ void AmountIndicator::Calculate(const SyncTickData& tick_data) {
         return;
     }
     
-    // 修复：ti已经是正确的桶索引，直接使用
     int bar_index = ti;
 
-    // 提前定义变量，避免重复定义
     std::string key = "amount";
-    // T日数据现在存储在MBarSeries中
     GSeries series = holder->get_m_bar(key);
     if (series.empty()) {
         series = GSeries();
@@ -125,53 +137,48 @@ void AmountIndicator::Calculate(const SyncTickData& tick_data) {
         spdlog::debug("[Calculate] symbol={} new GSeries allocated (thread_id={})", tick_data.symbol, thread_id_str);
     }
 
-    double amount = 0.0;
+    // 按照notebook逻辑：对每个快照数据都计算差分，然后在时间桶内累加
+    double current_amount = tick_data.tick_data.total_value_traded;  // 当前累积成交额
+    double prev_amount = prev_amount_map_[tick_data.symbol];  // 前一个累积成交额
     
-    // 1. 优先使用成交数据中的TradeMoney字段（如果有的话）
-    for (const auto& trans : tick_data.trans) {
-        // 注意：这里需要根据实际的数据结构调整
-        // 如果TradeData中有trade_money字段，直接使用
-        // 否则使用 volume * price 计算
-        if (trans.trade_money > 0.0) {
-            amount += trans.trade_money;  // 使用TradeMoney字段
-            spdlog::debug("[Calculate] symbol={} using TradeMoney: {}", tick_data.symbol, trans.trade_money);
+    // 计算差分成交额（类似notebook中的 snap.acc_amount.diff()）
+    double amount_diff = std::numeric_limits<double>::quiet_NaN();  // 默认NaN
+    if (prev_amount > 0.0) {
+        amount_diff = current_amount - prev_amount;
+        spdlog::debug("[Calculate] symbol={} amount diff: {} - {} = {}", 
+                     tick_data.symbol, current_amount, prev_amount, amount_diff);
         } else {
-            amount += trans.volume * trans.price;  // 使用volume * price计算
-            spdlog::debug("[Calculate] symbol={} calculated amount: {} * {} = {}", 
-                         tick_data.symbol, trans.volume, trans.price, trans.volume * trans.price);
-        }
+        // 第一次计算，返回NaN（与pandas diff()行为一致）
+        amount_diff = std::numeric_limits<double>::quiet_NaN();
+        spdlog::debug("[Calculate] symbol={} first calculation, amount diff: NaN", 
+                     tick_data.symbol);
     }
     
-    // 2. 如果成交数据为空，使用快照数据中的TotalValueTraded
-    if (amount == 0.0 && tick_data.tick_data.total_value_traded > 0.0) {
-        amount = tick_data.tick_data.total_value_traded;
-        spdlog::debug("[Calculate] symbol={} using snapshot TotalValueTraded: {}", tick_data.symbol, amount);
-    }
+    // 更新前一个累积值
+    prev_amount_map_[tick_data.symbol] = current_amount;
     
-    // 3. 如果还是没有数据，使用快照数据中的volume * last_price
-    if (amount == 0.0 && tick_data.tick_data.volume > 0.0 && tick_data.tick_data.last_price > 0.0) {
-        amount = tick_data.tick_data.volume * tick_data.tick_data.last_price;
-        spdlog::debug("[Calculate] symbol={} using snapshot volume * last_price: {} * {} = {}", 
-                     tick_data.symbol, tick_data.tick_data.volume, tick_data.tick_data.last_price, amount);
-    }
-    
-    // 4. 对于30分钟频率，需要累积该桶内的所有成交金额
-    // 获取当前桶的已有数据，进行累加
+    // 在时间桶内累加（类似notebook中的 groupby('belong_min').sum()）
     double existing_amount = series.get(bar_index);
-    if (!std::isnan(existing_amount)) {
-        amount += existing_amount;
+    if (!std::isnan(existing_amount) && !std::isnan(amount_diff)) {
+        amount_diff += existing_amount;
         spdlog::debug("[Calculate] symbol={} accumulated amount: {} + {} = {}", 
-                     tick_data.symbol, existing_amount, amount - existing_amount, amount);
+                     tick_data.symbol, existing_amount, amount_diff - existing_amount, amount_diff);
+    } else if (std::isnan(existing_amount) && !std::isnan(amount_diff)) {
+        // 如果existing是NaN但amount_diff不是NaN，直接使用amount_diff
+        spdlog::debug("[Calculate] symbol={} first valid amount in bucket: {}", 
+                     tick_data.symbol, amount_diff);
+    } else if (!std::isnan(existing_amount) && std::isnan(amount_diff)) {
+        // 如果amount_diff是NaN但existing不是NaN，保持existing
+        amount_diff = existing_amount;
+        spdlog::debug("[Calculate] symbol={} keeping existing amount: {}", 
+                     tick_data.symbol, amount_diff);
     }
-    
-    // 5. 如果还是没有数据，记录警告
-    if (amount == 0.0) {
-        spdlog::debug("[Calculate] symbol={} no amount data found", tick_data.symbol);
-    }
+    // 如果两者都是NaN，amount_diff保持NaN
 
-    spdlog::debug("[Calculate] symbol={} ti={} bar_index={} amount={} (thread_id={})", tick_data.symbol, ti, bar_index, amount, thread_id_str);
+    spdlog::debug("[Calculate] symbol={} ti={} bar_index={} amount_diff={} (thread_id={})", 
+                 tick_data.symbol, ti, bar_index, amount_diff, thread_id_str);
 
-    series.set(bar_index, amount);
+    series.set(bar_index, amount_diff);
     holder->offline_set_m_bar(key, series);
 
     spdlog::info("[Calculate-Exit] symbol={} thread_id={}", tick_data.symbol, thread_id_str);
@@ -183,4 +190,10 @@ BarSeriesHolder* AmountIndicator::get_bar_series_holder(const std::string& stock
         return it->second.get();  // 返回unique_ptr管理的原始指针
     }
     return nullptr;
+}
+
+void AmountIndicator::reset_diff_storage() {
+    prev_volume_map_.clear();
+    prev_amount_map_.clear();
+    spdlog::info("[AmountIndicator] 重置差分存储");
 }
