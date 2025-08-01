@@ -54,6 +54,9 @@ public:
     // 返回：从1970-01-01 00:00:00 UTC开始的总纳秒数（uint64_t）
     static uint64_t parse_datetime_ns(const std::string& datetime_str) {
         try {
+            // 添加调试信息
+            spdlog::debug("解析时间戳: {}", datetime_str);
+            
             // 分割日期时间部分和纳秒部分（.后的9位）
             size_t dot_pos = datetime_str.find('.');
             if (dot_pos == std::string::npos) {
@@ -113,6 +116,8 @@ public:
             sec_since_epoch -= 8 * 3600;  // 减去8小时得到UTC时间
             
             uint64_t total_ns = sec_since_epoch * 1000000000ULL + ns;  // 秒→纳秒 + 剩余纳秒
+
+            spdlog::debug("时间戳解析结果: {} -> {} ns", datetime_str, total_ns);
 
             return total_ns;
 

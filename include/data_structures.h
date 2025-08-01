@@ -1084,6 +1084,10 @@ public:
         int second = static_cast<int>(beijing_seconds_in_day % 60);
         int total_minutes = hour * 60 + minute;
 
+        // 添加调试信息
+        spdlog::debug("时间桶计算: total_ns={}, utc_sec={}, beijing_sec={}, hour={}, minute={}, second={}, total_minutes={}", 
+                     total_ns, utc_sec, beijing_sec, hour, minute, second, total_minutes);
+
         // 交易时间
         const int morning_start = 9 * 60 + 30;   // 9:30
         const int morning_end = 11 * 60 + 30;    // 11:30
@@ -1092,7 +1096,11 @@ public:
 
         bool is_morning = (total_minutes >= morning_start && total_minutes < morning_end);
         bool is_afternoon = (total_minutes >= afternoon_start && total_minutes < afternoon_end);
-        if (!is_morning && !is_afternoon) return -1;
+        if (!is_morning && !is_afternoon) {
+            spdlog::debug("非交易时间: total_minutes={}, morning=[{}, {}), afternoon=[{}, {})", 
+                         total_minutes, morning_start, morning_end, afternoon_start, afternoon_end);
+            return -1;
+        }
 
         int seconds_since_open = 0;
         if (is_morning) {
@@ -1110,6 +1118,10 @@ public:
             case Frequency::F30MIN: bucket_len = 1800; break;
         }
         int ti = seconds_since_open / bucket_len;
+        
+        spdlog::debug("时间桶结果: seconds_since_open={}, bucket_len={}, ti={}, bars_per_day={}", 
+                     seconds_since_open, bucket_len, ti, bars_per_day_);
+        
         if (ti < 0 || ti >= bars_per_day_) return -1;
         return ti;
     }

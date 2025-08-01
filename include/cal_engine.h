@@ -93,25 +93,25 @@ private:
     }
 
     // 新增：独立的任务创建函数（处理单只股票的指标计算）
-    void submit_indicator_calculation(const SyncTickData& sync_tick) {
-        std::lock_guard<std::mutex> lock(queue_mutex_);
-        task_queue_.push([this, sync_tick]() {
-            FinalAction on_exit([this]() {  });
-            try {
-                for (auto& [ind_name, indicator] : indicators_) {
-                    // 检查计算状态，避免重复计算
-                    if (!indicator->is_calculated()) {
-                        indicator->try_calculate(sync_tick);
-                    } else {
-                        spdlog::debug("指标[{}]已计算，跳过", ind_name);
-                    }
-                }
-            } catch (const std::exception& e) {
-                spdlog::error("[指标计算] 股票{}失败: {}", sync_tick.symbol, e.what());
-            }
-        });
-        task_cond_.notify_one();
-    }
+    // void submit_indicator_calculation(const SyncTickData& sync_tick) {
+    //     std::lock_guard<std::mutex> lock(queue_mutex_);
+    //     task_queue_.push([this, sync_tick]() {
+    //         FinalAction on_exit([this]() {  });
+    //         try {
+    //             for (auto& [ind_name, indicator] : indicators_) {
+    //                 // 检查计算状态，避免重复计算
+    //                 if (!indicator->is_calculated()) {
+    //                     indicator->try_calculate(sync_tick);
+    //                 } else {
+    //                     spdlog::debug("指标[{}]已计算，跳过", ind_name);
+    //                 }
+    //             }
+    //         } catch (const std::exception& e) {
+    //             spdlog::error("[指标计算] 股票{}失败: {}", sync_tick.symbol, e.what());
+    //         }
+    //     });
+    //     task_cond_.notify_one();
+    // }
 
 public:
     const GlobalConfig& config_;
@@ -166,9 +166,10 @@ public:
             if (t.joinable()) t.join();
         }
 
-        // 停止时间线程
+        // 停止时间线程（如果已启动）
         timer_running_ = false;
-        if (timer_thread_.joinable()) timer_thread_.join();
+        // 注意：timer_thread_没有被启动，所以不需要join
+        // if (timer_thread_.joinable()) timer_thread_.join();
     }
 
     // 初始化所有指标的存储（调用每个Indicator自己的init_storage）
@@ -257,26 +258,35 @@ public:
     // 重构：处理Tick数据（更新 SyncTickData 并触发计算）
     void onTick(const TickData& tick) {
         SyncTickData sync_tick;
-        
+
         {
             std::lock_guard<std::mutex> lock(sync_data_mutex_);
-            auto& sync_data = stock_sync_data_[tick.symbol];
-            
+            auto &sync_data = stock_sync_data_[tick.symbol];
+
             // 复制当前状态
             sync_tick = sync_data;
-            
+
             // 更新 tick_data
             sync_tick.tick_data = tick;
             sync_tick.symbol = tick.symbol;
             sync_tick.local_time_stamp = tick.real_time;
-            
+
+            // 立即同步计算所有Indicator（在当前线程中）
+            for (auto &[name, indicator]: indicators_) {
+                try {
+                    indicator->Calculate(sync_tick);
+                } catch (const std::exception &e) {
+                    spdlog::error("Indicator[{}] 计算失败 for {}: {}", name, sync_tick.symbol, e.what());
+                }
+            }
+
             // 清理数据，准备下一个周期
             sync_data.orders.clear();
             sync_data.trans.clear();
+
+            // 可选：重置SyncTickData以避免数据积累（根据需要）
+            // sync_data.reset();
         }
-        
-        // 提交计算任务
-        submit_indicator_calculation(sync_tick);
     }
 
     // 时间触发因子计算

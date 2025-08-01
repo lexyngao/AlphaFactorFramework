@@ -249,6 +249,7 @@ static bool load_single_day_indicator(
 }
 
 // 保存单个因子模块的结果（从Factor自身的factor_storage读取数据）
+//TODO：暂时取1min
 static bool save_factor(
         const std::shared_ptr<Factor>& factor,  // 目标因子实例
         const ModuleConfig& module,

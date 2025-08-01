@@ -8,6 +8,7 @@
 #include "data_structures.h"  // 包含基类Indicator定义
 #include <unordered_map>
 #include <memory> //智能指针
+#include <mutex>  // 添加mutex支持
 
 // 成交量指标
 class VolumeIndicator : public Indicator {
@@ -24,10 +25,9 @@ public:
     void reset_diff_storage();
 
 private:
-    // 存储每个股票的前一个累积值（用于差分计算）
+    // 存储每个股票的前一个累积成交量（用于差分计算）
     std::unordered_map<std::string, double> prev_volume_map_;
-    std::unordered_map<std::string, double> prev_amount_map_;
-
+    mutable std::mutex prev_volume_mutex_;  // 保护prev_volume_map_的访问
 };
 
 // 成交金额指标
@@ -44,10 +44,9 @@ public:
     void reset_diff_storage();
 
 private:
-    // 存储每个股票的前一个累积值（用于差分计算）
-    std::unordered_map<std::string, double> prev_volume_map_;
+    // 存储每个股票的前一个累积成交额（用于差分计算）
     std::unordered_map<std::string, double> prev_amount_map_;
-
+    mutable std::mutex prev_amount_mutex_;  // 保护prev_amount_map_的访问
 };
 
 #endif //ALPHAFACTORFRAMEWORK_MY_INDICATOR_H

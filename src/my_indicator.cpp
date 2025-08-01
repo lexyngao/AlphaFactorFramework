@@ -27,6 +27,9 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
     BarSeriesHolder* holder = it->second.get();
 
     int ti = get_time_bucket_index(tick_data.tick_data.real_time);
+    spdlog::debug("[Calculate] symbol={} real_time={} ti={} (thread_id={})", 
+                 tick_data.symbol, tick_data.tick_data.real_time, ti, thread_id_str);
+    
     if (ti < 0) {
         spdlog::debug("[Calculate] symbol={} invalid ti (thread_id={}) real_time={}", 
                      tick_data.symbol, thread_id_str, tick_data.tick_data.real_time);
@@ -45,11 +48,22 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
 
     // 按照notebook逻辑：对每个快照数据都计算差分，然后在时间桶内累加
     double current_volume = tick_data.tick_data.volume;  // 当前累积成交量
-    double prev_volume = prev_volume_map_[tick_data.symbol];  // 前一个累积成交量
+    double prev_volume = std::numeric_limits<double>::quiet_NaN();
+    
+    // 线程安全地获取和更新前一个累积值
+    {
+        std::lock_guard<std::mutex> lock(prev_volume_mutex_);
+        auto it = prev_volume_map_.find(tick_data.symbol);
+        if (it != prev_volume_map_.end()) {
+            prev_volume = it->second;
+        }
+        // 更新前一个累积值
+        prev_volume_map_[tick_data.symbol] = current_volume;
+    }
     
     // 计算差分成交量（类似notebook中的 snap.acc_volume.diff()）
     double volume_diff = std::numeric_limits<double>::quiet_NaN();  // 默认NaN
-    if (prev_volume > 0.0) {
+    if (!std::isnan(prev_volume) && prev_volume > 0.0) {
         volume_diff = current_volume - prev_volume;
         spdlog::debug("[Calculate] symbol={} volume diff: {} - {} = {}", 
                      tick_data.symbol, current_volume, prev_volume, volume_diff);
@@ -60,26 +74,28 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
                      tick_data.symbol);
     }
     
-    // 更新前一个累积值
-    prev_volume_map_[tick_data.symbol] = current_volume;
-    
     // 在时间桶内累加（类似notebook中的 groupby('belong_min').sum()）
     double existing_volume = series.get(bar_index);
-    if (!std::isnan(existing_volume) && !std::isnan(volume_diff)) {
-        volume_diff += existing_volume;
-        spdlog::debug("[Calculate] symbol={} accumulated volume: {} + {} = {}", 
-                     tick_data.symbol, existing_volume, volume_diff - existing_volume, volume_diff);
-    } else if (std::isnan(existing_volume) && !std::isnan(volume_diff)) {
-        // 如果existing是NaN但volume_diff不是NaN，直接使用volume_diff
-        spdlog::debug("[Calculate] symbol={} first valid volume in bucket: {}", 
-                     tick_data.symbol, volume_diff);
-    } else if (!std::isnan(existing_volume) && std::isnan(volume_diff)) {
-        // 如果volume_diff是NaN但existing不是NaN，保持existing
-        volume_diff = existing_volume;
-        spdlog::debug("[Calculate] symbol={} keeping existing volume: {}", 
-                     tick_data.symbol, volume_diff);
+    if (!std::isnan(volume_diff)) {
+        // 如果有有效的差分值，直接累加到时间桶
+        if (!std::isnan(existing_volume)) {
+            volume_diff += existing_volume;
+            spdlog::debug("[Calculate] symbol={} accumulated volume: {} + {} = {}", 
+                         tick_data.symbol, existing_volume, volume_diff - existing_volume, volume_diff);
+        } else {
+            // 如果时间桶内还没有值，直接使用差分值
+            spdlog::debug("[Calculate] symbol={} first valid volume in bucket: {}", 
+                         tick_data.symbol, volume_diff);
+        }
+    } else {
+        // 如果差分值是NaN，保持时间桶内的现有值
+        if (!std::isnan(existing_volume)) {
+            volume_diff = existing_volume;
+            spdlog::debug("[Calculate] symbol={} keeping existing volume: {}", 
+                         tick_data.symbol, volume_diff);
+        }
+        // 如果两者都是NaN，volume_diff保持NaN
     }
-    // 如果两者都是NaN，volume_diff保持NaN
 
     spdlog::debug("[Calculate] symbol={} ti={} bar_index={} volume_diff={} (thread_id={})", 
                  tick_data.symbol, ti, bar_index, volume_diff, thread_id_str);
@@ -99,8 +115,8 @@ BarSeriesHolder* VolumeIndicator::get_bar_series_holder(const std::string& stock
 }
 
 void VolumeIndicator::reset_diff_storage() {
+    std::lock_guard<std::mutex> lock(prev_volume_mutex_);
     prev_volume_map_.clear();
-    prev_amount_map_.clear();
     spdlog::info("[VolumeIndicator] 重置差分存储");
 }
 
@@ -139,41 +155,54 @@ void AmountIndicator::Calculate(const SyncTickData& tick_data) {
 
     // 按照notebook逻辑：对每个快照数据都计算差分，然后在时间桶内累加
     double current_amount = tick_data.tick_data.total_value_traded;  // 当前累积成交额
-    double prev_amount = prev_amount_map_[tick_data.symbol];  // 前一个累积成交额
+    double prev_amount = std::numeric_limits<double>::quiet_NaN();
+    
+    // 线程安全地获取和更新前一个累积值
+    {
+        std::lock_guard<std::mutex> lock(prev_amount_mutex_);
+        auto it = prev_amount_map_.find(tick_data.symbol);
+        if (it != prev_amount_map_.end()) {
+            prev_amount = it->second;
+        }
+        // 更新前一个累积值
+        prev_amount_map_[tick_data.symbol] = current_amount;
+    }
     
     // 计算差分成交额（类似notebook中的 snap.acc_amount.diff()）
     double amount_diff = std::numeric_limits<double>::quiet_NaN();  // 默认NaN
-    if (prev_amount > 0.0) {
+    if (!std::isnan(prev_amount) && prev_amount > 0.0) {
         amount_diff = current_amount - prev_amount;
         spdlog::debug("[Calculate] symbol={} amount diff: {} - {} = {}", 
                      tick_data.symbol, current_amount, prev_amount, amount_diff);
-        } else {
+    } else {
         // 第一次计算，返回NaN（与pandas diff()行为一致）
         amount_diff = std::numeric_limits<double>::quiet_NaN();
         spdlog::debug("[Calculate] symbol={} first calculation, amount diff: NaN", 
                      tick_data.symbol);
     }
     
-    // 更新前一个累积值
-    prev_amount_map_[tick_data.symbol] = current_amount;
-    
     // 在时间桶内累加（类似notebook中的 groupby('belong_min').sum()）
     double existing_amount = series.get(bar_index);
-    if (!std::isnan(existing_amount) && !std::isnan(amount_diff)) {
-        amount_diff += existing_amount;
-        spdlog::debug("[Calculate] symbol={} accumulated amount: {} + {} = {}", 
-                     tick_data.symbol, existing_amount, amount_diff - existing_amount, amount_diff);
-    } else if (std::isnan(existing_amount) && !std::isnan(amount_diff)) {
-        // 如果existing是NaN但amount_diff不是NaN，直接使用amount_diff
-        spdlog::debug("[Calculate] symbol={} first valid amount in bucket: {}", 
-                     tick_data.symbol, amount_diff);
-    } else if (!std::isnan(existing_amount) && std::isnan(amount_diff)) {
-        // 如果amount_diff是NaN但existing不是NaN，保持existing
-        amount_diff = existing_amount;
-        spdlog::debug("[Calculate] symbol={} keeping existing amount: {}", 
-                     tick_data.symbol, amount_diff);
+    if (!std::isnan(amount_diff)) {
+        // 如果有有效的差分值，直接累加到时间桶
+        if (!std::isnan(existing_amount)) {
+            amount_diff += existing_amount;
+            spdlog::debug("[Calculate] symbol={} accumulated amount: {} + {} = {}", 
+                         tick_data.symbol, existing_amount, amount_diff - existing_amount, amount_diff);
+        } else {
+            // 如果时间桶内还没有值，直接使用差分值
+            spdlog::debug("[Calculate] symbol={} first valid amount in bucket: {}", 
+                         tick_data.symbol, amount_diff);
+        }
+    } else {
+        // 如果差分值是NaN，保持时间桶内的现有值
+        if (!std::isnan(existing_amount)) {
+            amount_diff = existing_amount;
+            spdlog::debug("[Calculate] symbol={} keeping existing amount: {}", 
+                         tick_data.symbol, amount_diff);
+        }
+        // 如果两者都是NaN，amount_diff保持NaN
     }
-    // 如果两者都是NaN，amount_diff保持NaN
 
     spdlog::debug("[Calculate] symbol={} ti={} bar_index={} amount_diff={} (thread_id={})", 
                  tick_data.symbol, ti, bar_index, amount_diff, thread_id_str);
@@ -193,7 +222,7 @@ BarSeriesHolder* AmountIndicator::get_bar_series_holder(const std::string& stock
 }
 
 void AmountIndicator::reset_diff_storage() {
-    prev_volume_map_.clear();
+    std::lock_guard<std::mutex> lock(prev_amount_mutex_);
     prev_amount_map_.clear();
     spdlog::info("[AmountIndicator] 重置差分存储");
 }
