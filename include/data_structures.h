@@ -966,24 +966,25 @@ protected:
 
     void init_frequency_params() {
         // 重新计算交易时间范围：9:25-11:30 (125分钟) + 13:00-15:00 (120分钟) = 245分钟
-        int total_trading_minutes = 245;
+        // 注意：包含11:30这一分钟，所以上午是126分钟，下午是120分钟，总共246分钟
+        int total_trading_minutes = 246;
         
         switch (frequency_) {
             case Frequency::F15S:
                 step_ = 1;
-                bars_per_day_ = total_trading_minutes * 4;  // 245 * 4 = 980
+                bars_per_day_ = total_trading_minutes * 4;  // 246 * 4 = 984
                 break;
             case Frequency::F1MIN:
                 step_ = 4;
-                bars_per_day_ = total_trading_minutes;  // 245
+                bars_per_day_ = total_trading_minutes;  // 246
                 break;
             case Frequency::F5MIN:
                 step_ = 20;
-                bars_per_day_ = total_trading_minutes / 5;  // 245 / 5 = 49
+                bars_per_day_ = total_trading_minutes / 5;  // 246 / 5 = 49.2 -> 49
                 break;
             case Frequency::F30MIN:
                 step_ = 120;
-                bars_per_day_ = total_trading_minutes / 30;  // 245 / 30 = 8.17 -> 8
+                bars_per_day_ = total_trading_minutes / 30;  // 246 / 30 = 8.2 -> 8
                 break;
         }
     }
@@ -1098,26 +1099,32 @@ public:
         spdlog::debug("时间桶计算: total_ns={}, utc_sec={}, beijing_sec={}, hour={}, minute={}, second={}, total_minutes={}", 
                      total_ns, utc_sec, beijing_sec, hour, minute, second, total_minutes);
 
-        // 交易时间（扩展范围，包含集合竞价和午休时间）
+        // 交易时间定义
         const int morning_start = 9 * 60 + 25;   // 9:25 (集合竞价开始)
-        const int morning_end = 11 * 60 + 30;    // 11:30 (上午结束)
+        const int morning_end = 11 * 60 + 30;    // 11:30 (上午结束，包含11:30这一分钟)
         const int afternoon_start = 13 * 60;     // 13:00 (下午开始)
         const int afternoon_end = 15 * 60;       // 15:00 (下午结束)
 
-        bool is_morning = (total_minutes >= morning_start && total_minutes < morning_end);
-        bool is_afternoon = (total_minutes >= afternoon_start && total_minutes < afternoon_end);
+        // 检查是否在交易时间内
+        bool is_morning = (total_minutes >= morning_start && total_minutes <= morning_end);
+        bool is_afternoon = (total_minutes >= afternoon_start && total_minutes <= afternoon_end);
+        
         if (!is_morning && !is_afternoon) {
-            spdlog::debug("非交易时间: total_minutes={}, morning=[{}, {}), afternoon=[{}, {})", 
+            spdlog::debug("非交易时间: total_minutes={}, morning=[{}, {}], afternoon=[{}, {})", 
                          total_minutes, morning_start, morning_end, afternoon_start, afternoon_end);
             return -1;
         }
 
+        // 计算从9:25开始的秒数
         int seconds_since_open = 0;
         if (is_morning) {
+            // 上午：从9:25开始计算
             seconds_since_open = (total_minutes - morning_start) * 60 + second;
         } else {
-            seconds_since_open = (morning_end - morning_start) * 60 // 上午总秒数
-                                + (total_minutes - afternoon_start) * 60 + second;
+            // 下午：上午总秒数 + 下午秒数
+            int morning_total_seconds = (morning_end - morning_start + 1) * 60; // 包含11:30这一分钟
+            int afternoon_seconds = (total_minutes - afternoon_start) * 60 + second;
+            seconds_since_open = morning_total_seconds + afternoon_seconds;
         }
 
         int bucket_len = 15; // 默认15s
@@ -1146,29 +1153,41 @@ public:
             return "INVALID";
         }
         
-        int total_minutes = 0;
+        // 计算从9:25开始的秒数
+        int total_seconds = 0;
         switch (frequency_) {
             case Frequency::F15S:
-                total_minutes = bucket_index * 15 / 60;  // 转换为分钟
+                total_seconds = bucket_index * 15;
                 break;
             case Frequency::F1MIN:
-                total_minutes = bucket_index;
+                total_seconds = bucket_index * 60;
                 break;
             case Frequency::F5MIN:
-                total_minutes = bucket_index * 5;
+                total_seconds = bucket_index * 300;
                 break;
             case Frequency::F30MIN:
-                total_minutes = bucket_index * 30;
+                total_seconds = bucket_index * 1800;
                 break;
         }
         
-        // 计算对应的时间
-        int hour = 9 + (total_minutes / 60);
-        int minute = total_minutes % 60;
+        // 转换为从9:25开始的分钟数
+        int minutes_since_925 = total_seconds / 60;
         
-        // 处理上午和下午的时间
-        if (hour >= 12 && hour < 13) {
-            hour = 13;  // 跳过午休时间
+        // 计算实际时间
+        int hour, minute;
+        if (minutes_since_925 < 125) {
+            // 上午：9:25 + minutes_since_925
+            hour = 9 + (minutes_since_925 / 60);
+            minute = 25 + (minutes_since_925 % 60);
+            if (minute >= 60) {
+                hour += minute / 60;
+                minute = minute % 60;
+            }
+        } else {
+            // 下午：13:00 + (minutes_since_925 - 125)
+            int afternoon_minutes = minutes_since_925 - 125;
+            hour = 13 + (afternoon_minutes / 60);
+            minute = afternoon_minutes % 60;
         }
         
         char time_str[10];
