@@ -48,30 +48,42 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
 
     // 按照notebook逻辑：对每个快照数据都计算差分，然后在时间桶内累加
     double current_volume = tick_data.tick_data.volume;  // 当前累积成交量
-    double prev_volume = std::numeric_limits<double>::quiet_NaN();
     
-    // 线程安全地获取和更新前一个累积值
+    // 线程安全地获取和更新时间序列索引
+    double volume_diff = 0.0;
     {
-        std::lock_guard<std::mutex> lock(prev_volume_mutex_);
-        auto it = prev_volume_map_.find(tick_data.symbol);
-        if (it != prev_volume_map_.end()) {
+        std::lock_guard<std::mutex> lock(volume_cache_mutex_);
+        
+        // 获取该股票的时间序列缓存
+        auto& stock_series = time_series_volume_cache_[tick_data.symbol];
+        uint64_t current_time = tick_data.tick_data.real_time;
+        
+        // 查找前一个时间戳的累积值
+        double prev_volume = 0.0;
+        auto it = stock_series.lower_bound(current_time);
+        if (it != stock_series.begin()) {
+            --it;  // 前一个时间戳
             prev_volume = it->second;
+            spdlog::debug("[Calculate] symbol={} found prev_volume={} at time={}", 
+                         tick_data.symbol, prev_volume, it->first);
         } else {
-            // 第一次处理该股票，设置prev_volume为0（表示开盘时的累积成交量）
-            prev_volume = 0.0;
-            spdlog::debug("[Calculate] symbol={} first tick, setting prev_volume=0", tick_data.symbol);
+            spdlog::debug("[Calculate] symbol={} first tick, setting prev_volume=0", 
+                         tick_data.symbol);
         }
-        // 更新前一个累积值
-        prev_volume_map_[tick_data.symbol] = current_volume;
+        
+        // 计算差分
+        volume_diff = current_volume - prev_volume;
+        
+        // 存储当前时间戳的累积值
+        stock_series[current_time] = current_volume;
+        
+        spdlog::debug("[Calculate] symbol={} bucket={} time={} volume diff: {} - {} = {}", 
+                     tick_data.symbol, bar_index, current_time, current_volume, prev_volume, volume_diff);
     }
     
-    // 计算差分成交量（类似notebook中的 snap.acc_volume.diff()）
-    double volume_diff = current_volume - prev_volume;  // 直接计算差分
-    spdlog::debug("[Calculate] symbol={} volume diff: {} - {} = {}", 
-                 tick_data.symbol, current_volume, prev_volume, volume_diff);
-    
-    // 在时间桶内累加（类似notebook中的 groupby('belong_min').sum()）
+    // 在时间桶内累加差分值（类似notebook中的 groupby('belong_min').sum()）
     double existing_volume = series.get(bar_index);
+    
     if (!std::isnan(existing_volume)) {
         volume_diff += existing_volume;
         spdlog::debug("[Calculate] symbol={} accumulated volume: {} + {} = {}", 
@@ -87,6 +99,9 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
 
     series.set(bar_index, volume_diff);
     holder->offline_set_m_bar(key, series);
+    
+    // 输出时间桶信息
+    log_time_bucket_info(tick_data.symbol, bar_index, volume_diff);
 
     spdlog::info("[Calculate-Exit] symbol={} thread_id={}", tick_data.symbol, thread_id_str);
 }
@@ -100,9 +115,9 @@ BarSeriesHolder* VolumeIndicator::get_bar_series_holder(const std::string& stock
 }
 
 void VolumeIndicator::reset_diff_storage() {
-    std::lock_guard<std::mutex> lock(prev_volume_mutex_);
-    prev_volume_map_.clear();
-    spdlog::info("[VolumeIndicator] 重置差分存储");
+    std::lock_guard<std::mutex> lock(volume_cache_mutex_);
+    time_series_volume_cache_.clear();
+    spdlog::info("[VolumeIndicator] 重置时间序列缓存");
 }
 
 // AmountIndicator实现
@@ -142,28 +157,43 @@ void AmountIndicator::Calculate(const SyncTickData& tick_data) {
     double current_amount = tick_data.tick_data.total_value_traded;  // 当前累积成交额
     double prev_amount = std::numeric_limits<double>::quiet_NaN();
     
-    // 线程安全地获取和更新前一个累积值
+    // 线程安全地获取和更新时间序列索引
+    double amount_diff = 0.0;
     {
-        std::lock_guard<std::mutex> lock(prev_amount_mutex_);
-        auto it = prev_amount_map_.find(tick_data.symbol);
-        if (it != prev_amount_map_.end()) {
+        std::lock_guard<std::mutex> lock(amount_cache_mutex_);
+        
+        // 获取该股票的时间序列缓存
+        auto& stock_series = time_series_amount_cache_[tick_data.symbol];
+        uint64_t current_time = tick_data.tick_data.real_time;
+        
+        // 查找前一个时间戳的累积值
+        double prev_amount = 0.0;
+        auto it = stock_series.lower_bound(current_time);
+        if (it != stock_series.begin()) {
+            --it;  // 前一个时间戳
             prev_amount = it->second;
+            spdlog::debug("[Calculate] symbol={} found prev_amount={} at time={}", 
+                         tick_data.symbol, prev_amount, it->first);
         } else {
-            // 第一次处理该股票，设置prev_amount为0（表示开盘时的累积成交额）
-            prev_amount = 0.0;
-            spdlog::debug("[Calculate] symbol={} first tick, setting prev_amount=0", tick_data.symbol);
+            spdlog::debug("[Calculate] symbol={} first tick, setting prev_amount=0", 
+                         tick_data.symbol);
         }
-        // 更新前一个累积值
-        prev_amount_map_[tick_data.symbol] = current_amount;
+        
+        // 计算差分
+        amount_diff = current_amount - prev_amount;
+        
+        // 存储当前时间戳的累积值
+        stock_series[current_time] = current_amount;
+        
+        spdlog::debug("[Calculate] symbol={} bucket={} time={} amount diff: {} - {} = {}", 
+                     tick_data.symbol, bar_index, current_time, current_amount, prev_amount, amount_diff);
     }
     
-    // 计算差分成交额（类似notebook中的 snap.acc_amount.diff()）
-    double amount_diff = current_amount - prev_amount;  // 直接计算差分
-    spdlog::debug("[Calculate] symbol={} amount diff: {} - {} = {}", 
-                 tick_data.symbol, current_amount, prev_amount, amount_diff);
+    // 差分计算已在上面完成，这里只需要处理时间桶累加
     
-    // 在时间桶内累加（类似notebook中的 groupby('belong_min').sum()）
+    // 在时间桶内累加差分值（类似notebook中的 groupby('belong_min').sum()）
     double existing_amount = series.get(bar_index);
+    
     if (!std::isnan(existing_amount)) {
         amount_diff += existing_amount;
         spdlog::debug("[Calculate] symbol={} accumulated amount: {} + {} = {}", 
@@ -179,6 +209,9 @@ void AmountIndicator::Calculate(const SyncTickData& tick_data) {
 
     series.set(bar_index, amount_diff);
     holder->offline_set_m_bar(key, series);
+    
+    // 输出时间桶信息
+    log_time_bucket_info(tick_data.symbol, bar_index, amount_diff);
 
     spdlog::info("[Calculate-Exit] symbol={} thread_id={}", tick_data.symbol, thread_id_str);
 }
@@ -192,7 +225,7 @@ BarSeriesHolder* AmountIndicator::get_bar_series_holder(const std::string& stock
 }
 
 void AmountIndicator::reset_diff_storage() {
-    std::lock_guard<std::mutex> lock(prev_amount_mutex_);
-    prev_amount_map_.clear();
-    spdlog::info("[AmountIndicator] 重置差分存储");
+    std::lock_guard<std::mutex> lock(amount_cache_mutex_);
+    time_series_amount_cache_.clear();
+    spdlog::info("[AmountIndicator] 重置时间序列缓存");
 }

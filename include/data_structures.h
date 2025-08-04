@@ -965,22 +965,25 @@ protected:
     int bars_per_day_ = 960; // 默认15s
 
     void init_frequency_params() {
+        // 重新计算交易时间范围：9:25-11:30 (125分钟) + 13:00-15:00 (120分钟) = 245分钟
+        int total_trading_minutes = 245;
+        
         switch (frequency_) {
             case Frequency::F15S:
                 step_ = 1;
-                bars_per_day_ = 960;
+                bars_per_day_ = total_trading_minutes * 4;  // 245 * 4 = 980
                 break;
             case Frequency::F1MIN:
                 step_ = 4;
-                bars_per_day_ = 240;
+                bars_per_day_ = total_trading_minutes;  // 245
                 break;
             case Frequency::F5MIN:
                 step_ = 20;
-                bars_per_day_ = 48;
+                bars_per_day_ = total_trading_minutes / 5;  // 245 / 5 = 49
                 break;
             case Frequency::F30MIN:
                 step_ = 120;
-                bars_per_day_ = 8;
+                bars_per_day_ = total_trading_minutes / 30;  // 245 / 30 = 8.17 -> 8
                 break;
         }
     }
@@ -1023,6 +1026,13 @@ public:
     const std::string& name() const { return name_; }
     // 获取更新频率
     Frequency frequency() const { return frequency_; }
+    
+    // 新增：输出时间桶信息的辅助函数
+    void log_time_bucket_info(const std::string& symbol, int bucket_index, double value) const {
+        std::string time_str = format_time_bucket(bucket_index);
+        spdlog::info("[{}] symbol={} bucket[{}]={} value={}", 
+                     name_, symbol, bucket_index, time_str, value);
+    }
     // 获取存储结构（供Factor访问）
     const std::unordered_map<std::string, std::unique_ptr<BarSeriesHolder>>& get_storage()  const {
         return storage_;
@@ -1088,11 +1098,11 @@ public:
         spdlog::debug("时间桶计算: total_ns={}, utc_sec={}, beijing_sec={}, hour={}, minute={}, second={}, total_minutes={}", 
                      total_ns, utc_sec, beijing_sec, hour, minute, second, total_minutes);
 
-        // 交易时间
-        const int morning_start = 9 * 60 + 30;   // 9:30
-        const int morning_end = 11 * 60 + 30;    // 11:30
-        const int afternoon_start = 13 * 60;     // 13:00
-        const int afternoon_end = 15 * 60;       // 15:00
+        // 交易时间（扩展范围，包含集合竞价和午休时间）
+        const int morning_start = 9 * 60 + 25;   // 9:25 (集合竞价开始)
+        const int morning_end = 11 * 60 + 30;    // 11:30 (上午结束)
+        const int afternoon_start = 13 * 60;     // 13:00 (下午开始)
+        const int afternoon_end = 15 * 60;       // 15:00 (下午结束)
 
         bool is_morning = (total_minutes >= morning_start && total_minutes < morning_end);
         bool is_afternoon = (total_minutes >= afternoon_start && total_minutes < afternoon_end);
@@ -1129,6 +1139,42 @@ public:
     int get_step() const { return step_; }
     int get_bars_per_day() const { return bars_per_day_; }
     Frequency get_frequency() const { return frequency_; }
+    
+    // 新增：格式化时间桶索引为可读时间
+    std::string format_time_bucket(int bucket_index) const {
+        if (bucket_index < 0 || bucket_index >= bars_per_day_) {
+            return "INVALID";
+        }
+        
+        int total_minutes = 0;
+        switch (frequency_) {
+            case Frequency::F15S:
+                total_minutes = bucket_index * 15 / 60;  // 转换为分钟
+                break;
+            case Frequency::F1MIN:
+                total_minutes = bucket_index;
+                break;
+            case Frequency::F5MIN:
+                total_minutes = bucket_index * 5;
+                break;
+            case Frequency::F30MIN:
+                total_minutes = bucket_index * 30;
+                break;
+        }
+        
+        // 计算对应的时间
+        int hour = 9 + (total_minutes / 60);
+        int minute = total_minutes % 60;
+        
+        // 处理上午和下午的时间
+        if (hour >= 12 && hour < 13) {
+            hour = 13;  // 跳过午休时间
+        }
+        
+        char time_str[10];
+        snprintf(time_str, sizeof(time_str), "%02d:%02d", hour, minute);
+        return std::string(time_str);
+    }
 
     // 新增：写入T日数据到storage_
     void set_bar_series(const std::string& stock, const std::string& indicator_name, const GSeries& series) {

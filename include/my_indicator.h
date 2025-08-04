@@ -25,9 +25,9 @@ public:
     void reset_diff_storage();
 
 private:
-    // 存储每个股票的前一个累积成交量（用于差分计算）
-    std::unordered_map<std::string, double> prev_volume_map_;
-    mutable std::mutex prev_volume_mutex_;  // 保护prev_volume_map_的访问
+    // 使用时间序列索引存储累积值：股票 -> 时间戳 -> 累积值
+    std::unordered_map<std::string, std::map<uint64_t, double>> time_series_volume_cache_;
+    mutable std::mutex volume_cache_mutex_;  // 保护time_series_volume_cache_的访问
 };
 
 // 成交金额指标
@@ -44,9 +44,9 @@ public:
     void reset_diff_storage();
 
 private:
-    // 存储每个股票的前一个累积成交额（用于差分计算）
-    std::unordered_map<std::string, double> prev_amount_map_;
-    mutable std::mutex prev_amount_mutex_;  // 保护prev_amount_map_的访问
+    // 使用时间序列索引存储累积值：股票 -> 时间戳 -> 累积值
+    std::unordered_map<std::string, std::map<uint64_t, double>> time_series_amount_cache_;
+    mutable std::mutex amount_cache_mutex_;  // 保护time_series_amount_cache_的访问
 };
 
 #endif //ALPHAFACTORFRAMEWORK_MY_INDICATOR_H
