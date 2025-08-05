@@ -46,7 +46,7 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
         spdlog::debug("[Calculate] symbol={} new GSeries allocated (thread_id={})", tick_data.symbol, thread_id_str);
     }
 
-    // 按照notebook逻辑：对每个快照数据都计算差分，然后在时间桶内累加
+    // 对每个快照数据都计算差分，然后在时间桶内累加
     double current_volume = tick_data.tick_data.volume;  // 当前累积成交量
     
     // 线程安全地获取和更新时间序列索引
@@ -153,7 +153,7 @@ void AmountIndicator::Calculate(const SyncTickData& tick_data) {
         spdlog::debug("[Calculate] symbol={} new GSeries allocated (thread_id={})", tick_data.symbol, thread_id_str);
     }
 
-    // 按照notebook逻辑：对每个快照数据都计算差分，然后在时间桶内累加
+    // 对每个快照数据都计算差分，然后在时间桶内累加
     double current_amount = tick_data.tick_data.total_value_traded;  // 当前累积成交额
     double prev_amount = std::numeric_limits<double>::quiet_NaN();
     
@@ -191,7 +191,7 @@ void AmountIndicator::Calculate(const SyncTickData& tick_data) {
     
     // 差分计算已在上面完成，这里只需要处理时间桶累加
     
-    // 在时间桶内累加差分值（类似notebook中的 groupby('belong_min').sum()）
+    // 在时间桶内累加差分值（类似 groupby('belong_min').sum()）
     double existing_amount = series.get(bar_index);
     
     if (!std::isnan(existing_amount)) {

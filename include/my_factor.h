@@ -21,12 +21,7 @@ public:
         int ti
     ) override;
 
-    // 新增：直接访问indicator存储的实现
-    GSeries definition_with_indicators(
-        const std::unordered_map<std::string, std::shared_ptr<Indicator>>& indicators,
-        const std::vector<std::string>& sorted_stock_list,
-        int ti
-    ) override;
+
 
     // 新增：使用访问器模式的实现
     GSeries definition_with_accessor(
@@ -53,12 +48,7 @@ public:
         int ti
     ) override;
 
-    // 新增：直接访问indicator存储的实现
-    GSeries definition_with_indicators(
-        const std::unordered_map<std::string, std::shared_ptr<Indicator>>& indicators,
-        const std::vector<std::string>& sorted_stock_list,
-        int ti
-    ) override;
+
 
     // 新增：使用访问器模式的实现
     GSeries definition_with_accessor(

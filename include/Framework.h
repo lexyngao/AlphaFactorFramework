@@ -90,6 +90,7 @@ public:
         // 重置所有指标的计算状态和差分存储
         engine_.reset_all_indicator_status();
         engine_.reset_diff_storage();
+
         
         // 设置factor依赖关系
         setup_factor_dependencies();
@@ -97,7 +98,7 @@ public:
         // 生成时间事件并插入到数据流中
         std::vector<MarketAllField> all_data_with_time = all_tick_datas;
 
-        // 生成5分钟间隔的时间事件（Factor固定为5分钟频率） #TODO：为了debug
+        // 生成5分钟间隔的时间事件（Factor固定为5分钟频率） #TODO：为了debug改成60s
         std::vector<uint64_t> time_points = generate_time_points(60, config_.calculate_date);  // 300秒 = 5分钟
         spdlog::info("生成了 {} 个时间事件", time_points.size());
         

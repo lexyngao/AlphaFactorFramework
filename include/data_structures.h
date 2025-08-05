@@ -959,42 +959,50 @@ protected:
     std::string path_;          // 持久化基础路径
     Frequency frequency_;       // 更新频率
     
-    // 新增：计算状态标记（线程安全）
+    // 计算状态标记（线程安全）
     mutable std::atomic<bool> is_calculated_{false};  // 是否已计算完成
     int step_ = 1; // 步长，默认每个bar都输出
     int bars_per_day_ = 960; // 默认15s
 
     void init_frequency_params() {
-        // 重新计算交易时间范围：9:25-11:30 (125分钟) + 13:00-15:00 (120分钟) = 245分钟
-        // 注意：包含11:30这一分钟，所以上午是126分钟，下午是120分钟，总共246分钟
-        int total_trading_minutes = 246;
+        // 新的时间桶逻辑包含的时间段：
+        // 1. 9:00-9:30:00 -> 映射到9:30桶 (30分钟)
+        // 2. 9:30:00-11:30:00 -> 正常映射 (120分钟)
+        // 3. 11:30:00-13:00:00 -> 映射到13:00桶 (90分钟)
+        // 4. 13:00:00-14:57:00 -> 正常映射 (117分钟)
+        // 5. 14:57:00-15:00+ -> 映射到14:57桶 (3分钟+)
+        
+        // 计算实际需要的时间桶数量
+        // 正常映射的时间：9:30-11:30 (120分钟) + 13:00-14:57 (117分钟) = 237分钟
+        // 转换为15秒桶：237 * 4 = 948个桶
+        int normal_trading_minutes = 237;
         
         switch (frequency_) {
             case Frequency::F15S:
                 step_ = 1;
-                bars_per_day_ = total_trading_minutes * 4;  // 246 * 4 = 984
+                bars_per_day_ = normal_trading_minutes * 4 ;  // 237 * 4 = 948
                 break;
             case Frequency::F1MIN:
                 step_ = 4;
-                bars_per_day_ = total_trading_minutes;  // 246
+                bars_per_day_ = normal_trading_minutes + 1;  // 237
                 break;
             case Frequency::F5MIN:
                 step_ = 20;
-                bars_per_day_ = total_trading_minutes / 5;  // 246 / 5 = 49.2 -> 49
+                bars_per_day_ = normal_trading_minutes / 5 + 1;   // 237 / 5 = 47.4 -> 47
                 break;
             case Frequency::F30MIN:
                 step_ = 120;
-                bars_per_day_ = total_trading_minutes / 30;  // 246 / 30 = 8.2 -> 8
+                bars_per_day_ = normal_trading_minutes / 30 + 1;  // 237 / 30 = 7.9 -> 8
                 break;
         }
     }
 
-    // 关键修改：用unique_ptr自动管理BarSeriesHolder的生命周期
+    // 用unique_ptr自动管理BarSeriesHolder的生命周期
     std::unordered_map<std::string, std::unique_ptr<BarSeriesHolder>> storage_;
 
 
 public:
-    // 修改：通过ModuleConfig的参数初始化
+    // 通过ModuleConfig的参数初始化
     Indicator(const ModuleConfig& module)
             : name_(module.name), id_(module.id), path_(module.path), frequency_([](const std::string& freq_str) {
         if (freq_str == "15S" || freq_str == "15s") return Frequency::F15S;
@@ -1087,7 +1095,6 @@ public:
 
         // 1. 转换为北京时间
         int64_t utc_sec = total_ns / 1000000000;
-        // 修复：total_ns已经是UTC时间，需要加上8小时转换为北京时间
         int64_t beijing_sec = utc_sec + 8 * 3600;  // UTC + 8小时 = 北京时间
         int64_t beijing_seconds_in_day = beijing_sec % 86400;
         int hour = static_cast<int>(beijing_seconds_in_day / 3600);
@@ -1099,61 +1106,67 @@ public:
         spdlog::debug("时间桶计算: total_ns={}, utc_sec={}, beijing_sec={}, hour={}, minute={}, second={}, total_minutes={}", 
                      total_ns, utc_sec, beijing_sec, hour, minute, second, total_minutes);
 
-        // 交易时间定义
-        const int morning_start = 9 * 60 + 25;   // 9:25 (集合竞价开始)
-        const int morning_end = 11 * 60 + 30;    // 11:30 (上午结束，包含11:30这一分钟)
-        const int afternoon_start = 13 * 60;     // 13:00 (下午开始)
-        const int afternoon_end = 15 * 60;       // 15:00 (下午结束)
+        // 新的时间桶映射逻辑
+        // 定义关键时间点（以分钟为单位）
+        const int time_900 = 9 * 60 + 0;    // 9:00
+        const int time_930 = 9 * 60 + 30;   // 9:30
+        const int time_1130 = 11 * 60 + 30; // 11:30
+        const int time_1300 = 13 * 60 + 0;  // 13:00
+        const int time_1457 = 14 * 60 + 57; // 14:57
+        const int time_1500 = 15 * 60 + 0;  // 15:00
 
-        // 检查是否在交易时间内
-        bool is_morning = (total_minutes >= morning_start && total_minutes <= morning_end);
-        bool is_afternoon = (total_minutes >= afternoon_start && total_minutes <= afternoon_end);
+        // 检查时间范围并映射到对应桶
+        int target_bucket = -1;
         
-        if (!is_morning && !is_afternoon) {
-            spdlog::debug("非交易时间: total_minutes={}, morning=[{}, {}], afternoon=[{}, {})", 
-                         total_minutes, morning_start, morning_end, afternoon_start, afternoon_end);
+        if (total_minutes >= time_900 && total_minutes < time_930) {
+            // 9:00:00-9:30:00 映射到 9:30 桶 (bucket=0)
+            target_bucket = 0;
+            spdlog::debug("时间映射: {}:{} -> 9:30桶 (bucket={})", hour, minute, target_bucket);
+        } else if (total_minutes >= time_930 && total_minutes < time_1130) {
+            // 9:30:00-11:30:00 正常映射 (9:30:00-9:30:15就是bucket=0)
+            int seconds_since_930 = (total_minutes - time_930) * 60 + second;
+            target_bucket = seconds_since_930 / 15;
+            spdlog::debug("正常映射: {}:{} -> bucket={}", hour, minute, target_bucket);
+        } else if (total_minutes >= time_1130 && total_minutes < time_1300) {
+            // 11:30:00-13:00:00 映射到 13:00 桶
+            target_bucket = 480;
+            spdlog::debug("时间映射: {}:{} -> 13:00桶 (bucket={})", hour, minute, target_bucket);
+        } else if (total_minutes >= time_1300 && total_minutes < time_1457) {
+            // 13:00:00-14:57:00 正常映射 (从bucket=480开始)
+            int seconds_since_1300 = (total_minutes - time_1300) * 60 + second;
+            target_bucket = seconds_since_1300 / 15 + 480;
+            spdlog::debug("正常映射: {}:{} -> bucket={}", hour, minute, target_bucket);
+        } else {
+            // 其他时间返回-1
+            spdlog::debug("非交易时间: {}:{}", hour, minute);
             return -1;
         }
-
-        // 计算从9:25开始的秒数
-        int seconds_since_open = 0;
-        if (is_morning) {
-            // 上午：从9:25开始计算
-            seconds_since_open = (total_minutes - morning_start) * 60 + second;
-        } else {
-            // 下午：上午总秒数 + 下午秒数
-            int morning_total_seconds = (morning_end - morning_start + 1) * 60; // 包含11:30这一分钟
-            int afternoon_seconds = (total_minutes - afternoon_start) * 60 + second;
-            seconds_since_open = morning_total_seconds + afternoon_seconds;
-        }
-
-        int bucket_len = 15; // 默认15s
-        switch (frequency_) {
-            case Frequency::F15S: bucket_len = 15; break;
-            case Frequency::F1MIN: bucket_len = 60; break;
-            case Frequency::F5MIN: bucket_len = 300; break;
-            case Frequency::F30MIN: bucket_len = 1800; break;
-        }
-        int ti = seconds_since_open / bucket_len;
         
-        spdlog::debug("时间桶结果: seconds_since_open={}, bucket_len={}, ti={}, bars_per_day={}", 
-                     seconds_since_open, bucket_len, ti, bars_per_day_);
+        spdlog::debug("时间桶结果: {}:{} -> bucket={}, bars_per_day={}", 
+                     hour, minute, target_bucket, bars_per_day_);
         
-        if (ti < 0 || ti >= bars_per_day_) return -1;
-        return ti;
+        if (target_bucket < 0 || target_bucket >= bars_per_day_) return -1;
+        return target_bucket;
     }
 
     int get_step() const { return step_; }
     int get_bars_per_day() const { return bars_per_day_; }
     Frequency get_frequency() const { return frequency_; }
     
-    // 新增：格式化时间桶索引为可读时间
+    // 格式化时间桶索引为可读时间
     std::string format_time_bucket(int bucket_index) const {
         if (bucket_index < 0 || bucket_index >= bars_per_day_) {
             return "INVALID";
         }
         
-        // 计算从9:25开始的秒数
+        // 根据新的时间桶映射逻辑，计算对应的实际时间
+        // 定义关键时间点（以分钟为单位）
+        const int time_930 = 9 * 60 + 30;   // 9:30
+        const int time_1130 = 11 * 60 + 30; // 11:30
+        const int time_1300 = 13 * 60 + 0;  // 13:00
+        const int time_1457 = 14 * 60 + 57; // 14:57
+        
+        // 计算从9:30开始的秒数
         int total_seconds = 0;
         switch (frequency_) {
             case Frequency::F15S:
@@ -1170,32 +1183,47 @@ public:
                 break;
         }
         
-        // 转换为从9:25开始的分钟数
-        int minutes_since_925 = total_seconds / 60;
+        // 转换为从9:30开始的分钟数
+        int minutes_since_930 = total_seconds / 60;
         
         // 计算实际时间
         int hour, minute;
-        if (minutes_since_925 < 125) {
-            // 上午：9:25 + minutes_since_925
-            hour = 9 + (minutes_since_925 / 60);
-            minute = 25 + (minutes_since_925 % 60);
+        if (minutes_since_930 < 120) {
+            // 上午：9:30 + minutes_since_930
+            hour = 9 + (minutes_since_930 / 60);
+            minute = 30 + (minutes_since_930 % 60);
             if (minute >= 60) {
                 hour += minute / 60;
                 minute = minute % 60;
             }
         } else {
-            // 下午：13:00 + (minutes_since_925 - 125)
-            int afternoon_minutes = minutes_since_925 - 125;
+            // 下午：13:00 + (minutes_since_930 - 120)
+            int afternoon_minutes = minutes_since_930 - 120;
             hour = 13 + (afternoon_minutes / 60);
             minute = afternoon_minutes % 60;
         }
         
-        char time_str[10];
-        snprintf(time_str, sizeof(time_str), "%02d:%02d", hour, minute);
+        // 检查是否是特殊映射的时间点
+        // 9:30对应的桶索引 = 0
+        // 13:00对应的桶索引 = 480
+        // 14:57对应的桶索引需要计算
+        int seconds_since_1300 = (time_1457 - time_1300) * 60; // 到14:57的秒数
+        int bucket_1457 = seconds_since_1300 / 15 + 480;
+        
+        char time_str[20];
+        if (bucket_index == 0) {
+            snprintf(time_str, sizeof(time_str), "09:30(特殊)");
+        } else if (bucket_index == 480) {
+            snprintf(time_str, sizeof(time_str), "13:00(特殊)");
+        } else if (bucket_index == bucket_1457) {
+            snprintf(time_str, sizeof(time_str), "14:57(特殊)");
+        } else {
+            snprintf(time_str, sizeof(time_str), "%02d:%02d", hour, minute);
+        }
         return std::string(time_str);
     }
 
-    // 新增：写入T日数据到storage_
+    // 写入T日数据到storage_
     void set_bar_series(const std::string& stock, const std::string& indicator_name, const GSeries& series) {
         auto it = storage_.find(stock);
         if (it == storage_.end() || !it->second) {
@@ -1239,26 +1267,8 @@ public:
         return GSeries();
     }
 
-    // 新增：更灵活的definition方法，可以访问所有indicator的存储
-    virtual GSeries definition_with_indicators(
-            const std::unordered_map<std::string, std::shared_ptr<Indicator>>& indicators,
-            const std::vector<std::string>& sorted_stock_list,
-            int ti
-    ) {
-        // 默认实现：转换为bar_runners格式调用原有方法
-        std::unordered_map<std::string, BarSeriesHolder*> bar_runners;
-        for (const auto& [ind_name, indicator] : indicators) {
-            const auto& storage = indicator->get_storage();
-            for (const auto& [stock, holder] : storage) {
-                if (bar_runners.find(stock) == bar_runners.end()) {
-                    bar_runners[stock] = holder.get();
-                }
-            }
-        }
-        return definition(bar_runners, sorted_stock_list, ti);
-    }
 
-    // 新增：使用访问器模式的definition方法
+    // 使用访问器模式的definition方法
     virtual GSeries definition_with_accessor(
             std::function<std::shared_ptr<Indicator>(const std::string&)> get_indicator,
             const std::vector<std::string>& sorted_stock_list,
@@ -1272,7 +1282,7 @@ public:
         return GSeries();
     }
 
-    // 新增：设置因子计算结果
+    // 设置因子计算结果
     void set_factor_result(int ti, const GSeries& result) {
         factor_storage[ti][name_] = result;
     }
@@ -1293,17 +1303,17 @@ public:
         return factor_storage;
     }
     
-    // 新增：设置依赖的indicators
+    // 设置依赖的indicators
     void set_dependent_indicators(const std::vector<const Indicator*>& indicators) {
         dependent_indicators_ = indicators;
     }
     
-    // 新增：获取依赖的indicators
+    // 获取依赖的indicators
     const std::vector<const Indicator*>& get_dependent_indicators() const {
         return dependent_indicators_;
     }
     
-    // 新增：根据indicator名称获取indicator
+    // 根据indicator名称获取indicator
     const Indicator* get_indicator_by_name(const std::string& indicator_name) const {
         for (const auto& indicator : dependent_indicators_) {
             if (indicator && indicator->name() == indicator_name) {
