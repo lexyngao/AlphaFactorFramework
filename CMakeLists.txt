@@ -21,6 +21,7 @@ add_executable(AlphaFactorFramework main.cpp
         src/tz.cpp
         src/my_indicator.cpp
         src/my_factor.cpp
+        src/diff_indicator.cpp
         src/gseries_impl.cpp)
 
 # 链接库

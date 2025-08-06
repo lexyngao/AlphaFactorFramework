@@ -8,9 +8,14 @@
 #include "data_structures.h"
 #include "cal_engine.h"
 #include "config.h"
+#include "diff_indicator.h"
 #include <fstream>
 #include <zlib.h>
+#include <filesystem>
+#include <sstream>
 #include "utils.h"
+
+namespace fs = std::filesystem;
 
 // 结果存储管理器（PDF 4节）
 class ResultStorage {
@@ -42,14 +47,22 @@ public:
                 return true;
             }
 
-            // 2. 创建存储目录
+            // 2. 检查是否为DiffIndicator，如果是则使用特殊保存逻辑
+            if (module.id == "DiffIndicator") {
+                // 尝试转换为DiffIndicator并调用其特殊保存方法
+                if (auto diff_ind = std::dynamic_pointer_cast<DiffIndicator>(indicator)) {
+                    return diff_ind->save_results(module, date);
+                }
+            }
+
+            // 3. 创建存储目录
             fs::path base_path = fs::path(module.path) / date / module.frequency;
             if (!fs::exists(base_path) && !fs::create_directories(base_path)) {
                 spdlog::error("创建目录失败: {}", base_path.string());
                 return false;
             }
 
-            // 3. 从Indicator的storage_中收集数据（核心修改）
+            // 4. 从Indicator的storage_中收集数据（核心修改）
             const auto& indicator_storage = indicator->get_storage();  // 获取指标自己的存储
             if (indicator_storage.empty()) {
                 spdlog::warn("指标[{}]的storage_为空，无数据可保存", module.name);

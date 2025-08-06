@@ -5,6 +5,7 @@
 #include "result_storage.h"
 #include "my_indicator.h"
 #include "my_factor.h"
+#include "diff_indicator.h"
 #include <memory>
 #include <vector>
 #include <unordered_map>
@@ -29,6 +30,8 @@ public:
                     indicator = std::make_shared<VolumeIndicator>(module);
                 } else if (module.id == "AmountIndicator") {
                     indicator = std::make_shared<AmountIndicator>(module);
+                } else if (module.id == "DiffIndicator") {
+                    indicator = std::make_shared<DiffIndicator>(module);
                 } else {
                     spdlog::error("未知的Indicator类型: {}", module.id);
                     continue;

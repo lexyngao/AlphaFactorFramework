@@ -4,6 +4,7 @@
 #include "data_structures.h"
 #include "config.h"
 #include "my_indicator.h"  // 添加这行以支持VolumeIndicator和AmountIndicator
+#include "diff_indicator.h"  // 添加这行以支持DiffIndicator
 #include <unordered_map>
 #include <vector>
 #include <queue>
@@ -231,11 +232,13 @@ public:
     void reset_diff_storage() {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         for (auto& [ind_name, indicator] : indicators_) {
-            // 尝试转换为VolumeIndicator或AmountIndicator并重置差分存储
+            // 尝试转换为VolumeIndicator、AmountIndicator或DiffIndicator并重置差分存储
             if (auto volume_ind = std::dynamic_pointer_cast<VolumeIndicator>(indicator)) {
                 volume_ind->reset_diff_storage();
             } else if (auto amount_ind = std::dynamic_pointer_cast<AmountIndicator>(indicator)) {
                 amount_ind->reset_diff_storage();
+            } else if (auto diff_ind = std::dynamic_pointer_cast<DiffIndicator>(indicator)) {
+                diff_ind->reset_diff_storage();
             }
         }
         spdlog::info("重置所有指标的差分存储");

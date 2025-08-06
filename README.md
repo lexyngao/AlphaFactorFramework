@@ -12,6 +12,7 @@ AlphaFactorFramework/
 │   ├── data_structures.h  # 核心数据结构定义
 │   ├── my_indicator.h     # 具体指标类
 │   ├── my_factor.h        # 具体因子类
+│   ├── diff_indicator.h   # 差分指标类（同时计算volume和amount）
 │   ├── data_loader.h      # 数据加载器
 │   ├── config.h           # 配置相关
 │   ├── result_storage.h   # 结果存储
@@ -19,6 +20,7 @@ AlphaFactorFramework/
 ├── src/                   # 源文件目录
 │   ├── my_indicator.cpp   # 具体指标实现
 │   ├── my_factor.cpp      # 具体因子实现
+│   ├── diff_indicator.cpp # 差分指标实现
 │   ├── data_loader.cpp    # 数据加载实现
 │   └── ...                # 其他源文件
 ├── config/                # 配置文件
@@ -75,6 +77,14 @@ AlphaFactorFramework/
   - 计算成交金额相关指标
   - 支持15秒、1分钟、5分钟、30分钟频率
   - 成交金额数据
+
+- **DiffIndicator** (`diff_indicator.h/cpp`)
+  - 通用差分指标，支持多字段差分计算
+  - 默认配置：同时计算volume和amount的差分
+  - 支持15秒、1分钟、5分钟、30分钟频率
+  - 分别保存每个字段数据到不同的gz文件
+  - 文件名格式：`{模块名}_{字段名}_{日期}_{频率}.csv.gz`
+  - 可扩展：支持添加其他字段的差分计算
 
 指标特点：
 - 实时计算，基于tick数据
