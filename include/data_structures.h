@@ -980,19 +980,19 @@ protected:
         switch (frequency_) {
             case Frequency::F15S:
                 step_ = 1;
-                bars_per_day_ = normal_trading_minutes * 4 ;  // 237 * 4 = 948
+                bars_per_day_ = normal_trading_minutes * 4;  // 237 * 4 = 948
                 break;
             case Frequency::F1MIN:
                 step_ = 4;
-                bars_per_day_ = normal_trading_minutes + 1;  // 237
+                bars_per_day_ = normal_trading_minutes;  // 237
                 break;
             case Frequency::F5MIN:
                 step_ = 20;
-                bars_per_day_ = normal_trading_minutes / 5 + 1;   // 237 / 5 = 47.4 -> 47
+                bars_per_day_ = (120 / 5) + (117 / 5) + ((117 % 5) > 0 ? 1 : 0);  // 24 + 23 + 1 = 48
                 break;
             case Frequency::F30MIN:
                 step_ = 120;
-                bars_per_day_ = normal_trading_minutes / 30 + 1;  // 237 / 30 = 7.9 -> 8
+                bars_per_day_ = (120 / 30) + (117 / 30) + ((117 % 30) > 0 ? 1 : 0);  // 4 + 3 + 1 = 8
                 break;
         }
     }

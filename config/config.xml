@@ -7,7 +7,7 @@
 <!--                path="data/indicator" frequency="15S"/>-->
                 <!-- 使用新的DiffIndicator，同时计算volume和amount -->
         <Module handler="Indicator" name="diff_volume_amount" id="DiffIndicator"
-                path="data/indicator" frequency="15S"/>
+                path="data/indicator" frequency="30min"/>
 <!--        注意 Indicator的frequency可选项为15S, 1min, 5min, 30min-->
         <Module handler="Factor" name="volume_factor" id="VolumeFactor" 
                 path="data/factor" frequency="1min"/>

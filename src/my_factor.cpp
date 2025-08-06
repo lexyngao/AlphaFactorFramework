@@ -1,13 +1,15 @@
 #include "my_factor.h"
 
-// 根据频率获取每日时间桶数量
+// 根据频率获取每日时间桶数量（与data_structures.h中的逻辑保持一致）
 int get_bars_per_day(Frequency frequency) {
+    int normal_trading_minutes = 237;  // 上午120分钟 + 下午117分钟
+    
     switch (frequency) {
-        case Frequency::F15S: return 960;   // 15秒频率，960个时间桶
-        case Frequency::F1MIN: return 240;  // 1分钟频率，240个时间桶
-        case Frequency::F5MIN: return 48;   // 5分钟频率，48个时间桶
-        case Frequency::F30MIN: return 8;   // 30分钟频率，8个时间桶
-        default: return 240;  // 默认1分钟频率
+        case Frequency::F15S: return normal_trading_minutes * 4;   // 237 * 4 = 948
+        case Frequency::F1MIN: return normal_trading_minutes;      // 237
+        case Frequency::F5MIN: return (120 / 5) + (117 / 5) + ((117 % 5) > 0 ? 1 : 0);  // 48
+        case Frequency::F30MIN: return (120 / 30) + (117 / 30) + ((117 % 30) > 0 ? 1 : 0);  // 8
+        default: return normal_trading_minutes;  // 默认1分钟频率
     }
 }
 

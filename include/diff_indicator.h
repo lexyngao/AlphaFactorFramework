@@ -20,6 +20,17 @@ public:
     };
 
     explicit DiffIndicator(const ModuleConfig& module) : Indicator(module) {
+        // 强制设置内部计算频率为15S，但保持配置的存储频率
+        storage_frequency_str_ = module.frequency;  // 保存配置的存储频率
+        
+        // 重新设置为15S进行内部计算
+        ModuleConfig internal_config = module;
+        internal_config.frequency = "15S";
+        
+        // 重新初始化频率参数为15S
+        frequency_ = Frequency::F15S;
+        init_frequency_params();
+        
         // 默认配置volume和amount差分
         setup_default_fields();
     }
@@ -35,6 +46,9 @@ public:
 
     // 保存结果（支持多字段）
     bool save_results(const ModuleConfig& module, const std::string& date);
+    
+    // 新增：聚合到指定频率
+    bool save_results_with_frequency(const ModuleConfig& module, const std::string& date, const std::string& target_frequency);
 
     // 获取指定字段的BarSeriesHolder
     BarSeriesHolder* get_field_bar_series_holder(const std::string& stock_code, const std::string& field_name) const;
@@ -49,6 +63,9 @@ private:
     // 互斥锁：字段名 -> 互斥锁
     std::unordered_map<std::string, std::unique_ptr<std::mutex>> cache_mutexes_;
     
+    // 存储频率（从配置文件读取）
+    std::string storage_frequency_str_;
+    
     // 计算单个字段的差分
     double calculate_field_diff(const std::string& field_name, 
                               const std::string& stock_code,
@@ -57,4 +74,10 @@ private:
     
     // 设置默认字段（volume和amount）
     void setup_default_fields();
+    
+    // 聚合辅助函数
+    int get_aggregation_ratio(const std::string& from_freq, const std::string& to_freq);
+    int get_target_bars_per_day(const std::string& frequency);
+    void aggregate_time_segment(const GSeries& base_series, GSeries& output_series, 
+                               int base_start, int base_end, int ratio, int output_start);
 }; 

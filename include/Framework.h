@@ -187,6 +187,45 @@ public:
             }
         }
     }
+    
+    // 新增：保存指定频率的DiffIndicator结果
+    void save_diff_indicator_with_frequencies(const std::string& indicator_name, 
+                                             const std::vector<std::string>& target_frequencies) {
+        auto it = indicator_map_.find(indicator_name);
+        if (it == indicator_map_.end()) {
+            spdlog::error("未找到指标: {}", indicator_name);
+            return;
+        }
+        
+        // 检查是否为DiffIndicator
+        auto diff_indicator = std::dynamic_pointer_cast<DiffIndicator>(it->second);
+        if (!diff_indicator) {
+            spdlog::error("指标[{}]不是DiffIndicator类型", indicator_name);
+            return;
+        }
+        
+        // 查找对应的模块配置
+        ModuleConfig module_config;
+        bool found = false;
+        for (const auto& module : config_.modules) {
+            if (module.name == indicator_name && module.handler == "Indicator") {
+                module_config = module;
+                found = true;
+                break;
+            }
+        }
+        
+        if (!found) {
+            spdlog::error("未找到指标[{}]的配置", indicator_name);
+            return;
+        }
+        
+        // 为每个目标频率保存数据
+        for (const auto& freq : target_frequencies) {
+            spdlog::info("保存指标[{}]的{}频率数据", indicator_name, freq);
+            diff_indicator->save_results_with_frequency(module_config, config_.calculate_date, freq);
+        }
+    }
 
     const std::vector<std::string>& get_stock_list() const { return stock_list_; }
     CalculationEngine& get_engine() { return engine_; }

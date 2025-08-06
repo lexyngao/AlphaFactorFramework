@@ -173,8 +173,15 @@ bool DiffIndicator::save_results(const ModuleConfig& module, const std::string& 
             return false;
         }
 
-        // 2. 创建存储目录
-        fs::path base_path = fs::path(module.path) / date / module.frequency;
+        // 2. 检查是否需要聚合（内部15S -> 配置频率）
+        if (storage_frequency_str_ != "15S") {
+            spdlog::info("DiffIndicator内部15S数据聚合到{}频率进行存储", storage_frequency_str_);
+            return save_results_with_frequency(module, date, storage_frequency_str_);
+        }
+
+        // 3. 如果配置就是15S，直接保存原始数据
+        spdlog::info("DiffIndicator保存原始15S数据");
+        fs::path base_path = fs::path(module.path) / date / storage_frequency_str_;
         if (!fs::exists(base_path) && !fs::create_directories(base_path)) {
             spdlog::error("创建目录失败: {}", base_path.string());
             return false;
@@ -224,7 +231,7 @@ bool DiffIndicator::save_results(const ModuleConfig& module, const std::string& 
 
             // 5. 生成GZ压缩文件
             std::string filename = fmt::format("{}_{}_{}_{}.csv.gz",
-                                               module.name, output_key, date, module.frequency);
+                                               module.name, output_key, date, storage_frequency_str_);
             fs::path file_path = base_path / filename;
 
             // 6. 写入GZ文件
@@ -278,5 +285,203 @@ bool DiffIndicator::save_results(const ModuleConfig& module, const std::string& 
     } catch (const std::exception& e) {
         spdlog::error("保存指标[{}]失败：{}", module.name, e.what());
         return false;
+    }
+}
+
+bool DiffIndicator::save_results_with_frequency(const ModuleConfig& module, const std::string& date, const std::string& target_frequency) {
+    try {
+        // 如果目标频率与基础频率相同，直接调用原始保存方法
+        std::string base_freq;
+        switch (get_frequency()) {
+            case Frequency::F15S: base_freq = "15S"; break;
+            case Frequency::F1MIN: base_freq = "1min"; break;
+            case Frequency::F5MIN: base_freq = "5min"; break;
+            case Frequency::F30MIN: base_freq = "30min"; break;
+        }
+        
+        if (base_freq == target_frequency) {
+            return save_results(module, date);
+        }
+        
+        // 创建存储目录
+        fs::path base_path = fs::path(module.path) / date / target_frequency;
+        if (!fs::exists(base_path) && !fs::create_directories(base_path)) {
+            spdlog::error("创建目录失败: {}", base_path.string());
+            return false;
+        }
+
+        // 获取聚合比率
+        int ratio = get_aggregation_ratio(base_freq, target_frequency);
+        int target_bars = get_target_bars_per_day(target_frequency);
+        
+        spdlog::info("开始聚合：{} -> {}，聚合比率: {}，目标桶数: {}", base_freq, target_frequency, ratio, target_bars);
+
+        // 提取股票列表
+        const auto& indicator_storage = get_storage();
+        std::vector<std::string> stock_list;
+        for (const auto& [stock_code, _] : indicator_storage) {
+            stock_list.push_back(stock_code);
+        }
+
+        // 为每个字段分别进行聚合和保存
+        for (const auto& field_config : diff_fields_) {
+            const std::string& output_key = field_config.output_key;
+            
+            // 收集聚合后的数据
+            std::map<int, std::map<std::string, double>> aggregated_data;
+            
+            for (const auto& [stock_code, holder_ptr] : indicator_storage) {
+                if (!holder_ptr) continue;
+                
+                const BarSeriesHolder* holder = holder_ptr.get();
+                GSeries base_series = holder->get_m_bar(output_key);
+                GSeries output_series(target_bars);
+                
+                // 处理上午时段：bucket 0-479 -> 上午桶
+                int morning_base_buckets = 120 * 4;  // 480个15S桶
+                int morning_target_buckets;
+                if (target_frequency == "1min") morning_target_buckets = 120;
+                else if (target_frequency == "5min") morning_target_buckets = 24;
+                else if (target_frequency == "30min") morning_target_buckets = 4;
+                
+                aggregate_time_segment(base_series, output_series, 0, morning_base_buckets - 1, ratio, 0);
+                
+                // 处理下午时段：bucket 480-947 -> 下午桶
+                int afternoon_base_start = 480;
+                int afternoon_base_end = 947;
+                aggregate_time_segment(base_series, output_series, afternoon_base_start, afternoon_base_end, ratio, morning_target_buckets);
+                
+                // 将聚合结果存储到数据结构中
+                for (int ti = 0; ti < target_bars; ++ti) {
+                    double value = output_series.get(ti);
+                    aggregated_data[ti][stock_code] = value;
+                }
+            }
+
+            // 生成GZ压缩文件
+            std::string filename = fmt::format("{}_{}_{}_{}.csv.gz",
+                                               module.name, output_key, date, target_frequency);
+            fs::path file_path = base_path / filename;
+
+            // 写入GZ文件
+            gzFile gz_file = gzopen(file_path.string().c_str(), "wb");
+            if (!gz_file) {
+                spdlog::error("无法创建GZ文件: {}", file_path.string());
+                return false;
+            }
+
+            // 写入表头
+            std::string header = "bar_index";
+            for (const auto& stock_code : stock_list) {
+                header += "," + stock_code;
+            }
+            header += "\n";
+            gzwrite(gz_file, header.data(), header.size());
+
+            // 写入数据
+            for (int ti = 0; ti < target_bars; ++ti) {
+                std::string line = std::to_string(ti);
+                
+                for (const auto& stock_code : stock_list) {
+                    auto bar_it = aggregated_data.find(ti);
+                    if (bar_it != aggregated_data.end()) {
+                        auto stock_it = bar_it->second.find(stock_code);
+                        if (stock_it != bar_it->second.end()) {
+                            double value = stock_it->second;
+                            if (std::isnan(value)) {
+                                line += ",";
+                            } else {
+                                line += fmt::format(",{:.6f}", value);
+                            }
+                        } else {
+                            line += ",";
+                        }
+                    } else {
+                        line += ",";
+                    }
+                }
+                line += "\n";
+                gzwrite(gz_file, line.data(), line.size());
+            }
+
+            gzclose(gz_file);
+            spdlog::info("聚合数据保存成功：{}", file_path.string());
+        }
+
+        return true;
+
+    } catch (const std::exception& e) {
+        spdlog::error("聚合保存失败：{}", e.what());
+        return false;
+    }
+}
+
+int DiffIndicator::get_aggregation_ratio(const std::string& from_freq, const std::string& to_freq) {
+    if (from_freq == "15S" && to_freq == "1min") return 4;
+    if (from_freq == "15S" && to_freq == "5min") return 20;
+    if (from_freq == "15S" && to_freq == "30min") return 120;
+    if (from_freq == "1min" && to_freq == "5min") return 5;
+    if (from_freq == "1min" && to_freq == "30min") return 30;
+    if (from_freq == "5min" && to_freq == "30min") return 6;
+    return 1;
+}
+
+int DiffIndicator::get_target_bars_per_day(const std::string& frequency) {
+    if (frequency == "15S") return 948;
+    if (frequency == "1min") return 237;
+    if (frequency == "5min") return 48;
+    if (frequency == "30min") return 8;
+    return 237;  // 默认1min
+}
+
+void DiffIndicator::aggregate_time_segment(const GSeries& base_series, GSeries& output_series, 
+                                         int base_start, int base_end, int ratio, int output_start) {
+    int segment_length = base_end - base_start + 1;
+    int output_buckets = segment_length / ratio;
+    
+    // 处理完整的聚合桶
+    for (int i = 0; i < output_buckets; i++) {
+        double sum = 0.0;
+        int valid_count = 0;
+        
+        for (int j = 0; j < ratio; j++) {
+            int base_idx = base_start + i * ratio + j;
+            if (base_idx <= base_end && base_idx < base_series.get_size()) {
+                double value = base_series.get(base_idx);
+                if (!std::isnan(value)) {
+                    sum += value;
+                    valid_count++;
+                }
+            }
+        }
+        
+        if (valid_count > 0 && (output_start + i) < output_series.get_size()) {
+            output_series.set(output_start + i, sum);
+        }
+    }
+    
+    // 处理最后一个不完整的桶（如果有剩余数据）
+    int remaining_length = segment_length % ratio;
+    if (remaining_length > 0) {
+        int last_bucket_start = base_start + output_buckets * ratio;
+        double sum = 0.0;
+        int valid_count = 0;
+        
+        for (int j = 0; j < remaining_length; j++) {
+            int base_idx = last_bucket_start + j;
+            if (base_idx <= base_end && base_idx < base_series.get_size()) {
+                double value = base_series.get(base_idx);
+                if (!std::isnan(value)) {
+                    sum += value;
+                    valid_count++;
+                }
+            }
+        }
+        
+        if (valid_count > 0 && (output_start + output_buckets) < output_series.get_size()) {
+            output_series.set(output_start + output_buckets, sum);
+            spdlog::debug("处理不完整桶: 输出位置={}, 有效数据={}, 总和={}", 
+                         output_start + output_buckets, valid_count, sum);
+        }
     }
 } 
