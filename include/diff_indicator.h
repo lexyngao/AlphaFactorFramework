@@ -53,6 +53,9 @@ public:
     // 获取指定字段的BarSeriesHolder
     BarSeriesHolder* get_field_bar_series_holder(const std::string& stock_code, const std::string& field_name) const;
 
+    // 获取存储频率字符串
+    const std::string& get_storage_frequency_str() const { return storage_frequency_str_; }
+
 private:
     // 差分字段配置
     std::vector<DiffFieldConfig> diff_fields_;

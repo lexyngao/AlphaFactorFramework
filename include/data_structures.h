@@ -958,6 +958,7 @@ protected:
     std::string id_;            // 类名（如"VolumeIndicator"）
     std::string path_;          // 持久化基础路径
     Frequency frequency_;       // 更新频率
+    std::string storage_frequency_str_; //存储的频率
     
     // 计算状态标记（线程安全）
     mutable std::atomic<bool> is_calculated_{false};  // 是否已计算完成
@@ -1035,24 +1036,6 @@ public:
     const std::string& name() const { return name_; }
     // 获取更新频率
     Frequency frequency() const { return frequency_; }
-    
-    // 新增：设置频率并重新初始化相关参数
-    void set_frequency(const std::string& freq_str) {
-        // 根据字符串设置频率
-        if (freq_str == "15S" || freq_str == "15s") {
-            frequency_ = Frequency::F15S;
-        } else if (freq_str == "1min") {
-            frequency_ = Frequency::F1MIN;
-        } else if (freq_str == "5min") {
-            frequency_ = Frequency::F5MIN;
-        } else if (freq_str == "30min") {
-            frequency_ = Frequency::F30MIN;
-        } else {
-            frequency_ = Frequency::F15S; // 默认15S
-        }
-        // 重新初始化频率相关参数
-        init_frequency_params();
-    }
     
     // 新增：输出时间桶信息的辅助函数
     void log_time_bucket_info(const std::string& symbol, int bucket_index, double value) const {
@@ -1251,6 +1234,13 @@ public:
         }
         // T日数据使用offline_set_m_bar方法
         it->second->offline_set_m_bar(indicator_name, series);
+    }
+
+    // 获取存储频率字符串
+    const std::string& get_storage_frequency_str() const { return storage_frequency_str_; }
+
+    void set_storage_frequency( const std::string& storage_frequency_str_name){
+        storage_frequency_str_ = storage_frequency_str_name;
     }
 };
 

@@ -297,10 +297,10 @@ public:
             spdlog::debug("处理时间事件: {}", timestamp);
             
             // 创建Factor线程组，每个Factor一个线程
-//            std::vector<std::thread> factor_threads;
+            std::vector<std::thread> factor_threads;
             
             for (auto& [factor_name, factor_ptr] : factors_) {
-//                factor_threads.emplace_back([this, factor_ptr = factor_ptr, timestamp]() {
+                factor_threads.emplace_back([this, factor_ptr = factor_ptr, timestamp]() {
                     try {
                         // 定义get_indicator函数
                         auto get_indicator = [this](const std::string& name) -> std::shared_ptr<Indicator> {
@@ -345,14 +345,14 @@ public:
                     } catch (const std::exception& e) {
                         spdlog::error("Factor[{}]计算失败: {}", factor_ptr->get_name(), e.what());
                     }
-//                });
+                });
             }
             
-//            // 等待当前时间事件的所有Factor线程完成
-//            for (auto& thread : factor_threads) {
-//                thread.join();
-//            }
-//
+            // 等待当前时间事件的所有Factor线程完成
+            for (auto& thread : factor_threads) {
+                thread.join();
+            }
+
             spdlog::debug("时间事件 {} 的所有Factor处理完成", timestamp);
         }
         

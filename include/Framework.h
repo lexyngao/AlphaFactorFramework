@@ -121,16 +121,17 @@ public:
                 spdlog::info("股票{}行情数据处理完成", stock_code);
             });
         }
-        
-        // 启动Factor线程组（按时间事件顺序，每个时间事件内按Factor多线程）
-        spdlog::info("启动Factor线程组，处理时间事件");
-        engine_.process_factor_time_events(time_points);
+
         
         // 等待所有Indicator线程完成
         spdlog::info("等待所有Indicator线程完成...");
         for (auto& thread : indicator_threads) {
             thread.join();
         }
+
+        // 启动Factor线程组（按时间事件顺序，每个时间事件内按Factor多线程）
+        spdlog::info("启动Factor线程组，处理时间事件");
+        engine_.process_factor_time_events(time_points);
         
         spdlog::info("引擎运行完成");
     }

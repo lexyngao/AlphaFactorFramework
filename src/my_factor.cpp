@@ -365,12 +365,24 @@ GSeries PriceFactor::definition_with_timestamp(
         return result;
     }
     
-    // 获取DiffIndicator的频率
-    Frequency diff_freq = diff_indicator->frequency();
-    spdlog::debug("DiffIndicator频率: {}, 时间戳: {}", static_cast<int>(diff_freq), timestamp);
+    // 获取DiffIndicator的存储频率字符串
+    std::string storage_freq_str = diff_indicator->get_storage_frequency_str();
+    spdlog::debug("DiffIndicator存储频率: {}, 时间戳: {}", storage_freq_str, timestamp);
+    
+    // 将字符串频率转换为Frequency枚举类型
+    Frequency storage_freq = Frequency::F15S; // 默认值
+    if (storage_freq_str == "15S" || storage_freq_str == "15s") {
+        storage_freq = Frequency::F15S;
+    } else if (storage_freq_str == "1min") {
+        storage_freq = Frequency::F1MIN;
+    } else if (storage_freq_str == "5min") {
+        storage_freq = Frequency::F5MIN;
+    } else if (storage_freq_str == "30min") {
+        storage_freq = Frequency::F30MIN;
+    }
     
     // 使用新的时间戳驱动函数计算可用的数据范围
-    auto [start_indicator_index, end_indicator_index] = get_available_data_range_from_timestamp(timestamp, diff_freq);
+    auto [start_indicator_index, end_indicator_index] = get_available_data_range_from_timestamp(timestamp, storage_freq);
 
 
     if (start_indicator_index < 0 || end_indicator_index < 0) {
@@ -379,7 +391,7 @@ GSeries PriceFactor::definition_with_timestamp(
     }
     
     spdlog::debug("时间戳驱动PriceFactor计算: timestamp={}, 映射到{}频率范围: [{}, {}]", 
-                  timestamp, static_cast<int>(diff_freq), start_indicator_index, end_indicator_index);
+                  timestamp, static_cast<int>(storage_freq), start_indicator_index, end_indicator_index);
     
     // 初始化结果序列
     result.resize(sorted_stock_list.size());

@@ -180,7 +180,7 @@ bool DiffIndicator::save_results(const ModuleConfig& module, const std::string& 
         }
 
         // 3. 如果配置就是15S，直接保存原始数据
-        spdlog::info("DiffIndicator保存原始15S数据");
+        spdlog::info("DiffIndicator保存数据");
         fs::path base_path = fs::path(module.path) / date / storage_frequency_str_;
         if (!fs::exists(base_path) && !fs::create_directories(base_path)) {
             spdlog::error("创建目录失败: {}", base_path.string());
@@ -309,13 +309,13 @@ bool DiffIndicator::save_results_with_frequency(const ModuleConfig& module, cons
     try {
         // 如果目标频率与基础频率相同，直接调用原始保存方法
         std::string base_freq = "15S";
-//        switch (get_frequency()) {
-//            case Frequency::F15S: base_freq = "15S"; break;
-//            case Frequency::F1MIN: base_freq = "1min"; break;
-//            case Frequency::F5MIN: base_freq = "5min"; break;
-//            case Frequency::F30MIN: base_freq = "30min"; break;
-//        }
-//
+        switch (get_frequency()) {
+            case Frequency::F15S: base_freq = "15S"; break;
+            case Frequency::F1MIN: base_freq = "1min"; break;
+            case Frequency::F5MIN: base_freq = "5min"; break;
+            case Frequency::F30MIN: base_freq = "30min"; break;
+        }
+
         if (base_freq == target_frequency) {
             return save_results(module, date);
         }
@@ -398,7 +398,8 @@ bool DiffIndicator::save_results_with_frequency(const ModuleConfig& module, cons
             // 写入数据
             for (int ti = 0; ti < target_bars; ++ti) {
                 std::string line = std::to_string(ti);
-                
+
+
                 for (const auto& stock_code : stock_list) {
                     auto bar_it = aggregated_data.find(ti);
                     if (bar_it != aggregated_data.end()) {

@@ -266,7 +266,7 @@ static bool load_single_day_indicator(
         const std::vector<std::string>& T_stock_list
 ) {
     // 更新indicator的频率为配置文件中指定的频率
-    indicator->set_frequency(module.frequency);
+    indicator->set_storage_frequency(module.frequency);
     spdlog::info("更新指标[{}]频率为: {}", module.name, module.frequency);
     
     fs::path base_path = fs::path(module.path) / date / module.frequency;
