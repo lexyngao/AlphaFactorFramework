@@ -211,12 +211,29 @@ bool DiffIndicator::save_results(const ModuleConfig& module, const std::string& 
 
             int bars_per_day = get_bars_per_day();
             for (const auto& [stock_code, holder_ptr] : indicator_storage) {
-                if (!holder_ptr) continue;
+                if (!holder_ptr) {
+                    spdlog::warn("DiffIndicator[{}]的股票[{}]holder为空，跳过", module.name, stock_code);
+                    continue;
+                }
+                
                 const BarSeriesHolder* holder = holder_ptr.get();
+                if (!holder) {
+                    spdlog::warn("DiffIndicator[{}]的股票[{}]holder指针为空，跳过", module.name, stock_code);
+                    continue;
+                }
+                
                 GSeries series = holder->get_m_bar(output_key);
+                
+                // 检查series是否有效
+                if (series.get_size() == 0) {
+                    spdlog::warn("DiffIndicator[{}]的股票[{}]键[{}]数据为空，跳过", module.name, stock_code, output_key);
+                    continue;
+                }
+                
                 if (series.get_size() < bars_per_day) {
                     series.resize(bars_per_day);
                 }
+                
                 for (int ti = 0; ti < bars_per_day; ++ti) {
                     double value = series.get(ti);
                     bar_data[ti][stock_code] = value;
@@ -291,14 +308,14 @@ bool DiffIndicator::save_results(const ModuleConfig& module, const std::string& 
 bool DiffIndicator::save_results_with_frequency(const ModuleConfig& module, const std::string& date, const std::string& target_frequency) {
     try {
         // 如果目标频率与基础频率相同，直接调用原始保存方法
-        std::string base_freq;
-        switch (get_frequency()) {
-            case Frequency::F15S: base_freq = "15S"; break;
-            case Frequency::F1MIN: base_freq = "1min"; break;
-            case Frequency::F5MIN: base_freq = "5min"; break;
-            case Frequency::F30MIN: base_freq = "30min"; break;
-        }
-        
+        std::string base_freq = "15S";
+//        switch (get_frequency()) {
+//            case Frequency::F15S: base_freq = "15S"; break;
+//            case Frequency::F1MIN: base_freq = "1min"; break;
+//            case Frequency::F5MIN: base_freq = "5min"; break;
+//            case Frequency::F30MIN: base_freq = "30min"; break;
+//        }
+//
         if (base_freq == target_frequency) {
             return save_results(module, date);
         }

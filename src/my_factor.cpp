@@ -99,58 +99,95 @@ GSeries VolumeFactor::definition_with_accessor(
 ) {
     GSeries result;
     
-    // 按需获取volume indicator
+    // 动态获取volume indicator的频率
     auto volume_indicator = get_indicator("volume");
     if (!volume_indicator) {
-        spdlog::error("找不到volume indicator");
+        spdlog::error("找不到volume indicator，使用默认1分钟频率");
         return result;
     }
     
-    Frequency indicator_freq = volume_indicator->get_frequency();
+    Frequency indicator_freq = volume_indicator->frequency();
+    spdlog::debug("volume indicator频率: {}", static_cast<int>(indicator_freq));
     
     // 使用通用的频率匹配函数计算时间桶映射范围
     auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, indicator_freq, Frequency::F1MIN);
     
-    spdlog::debug("VolumeFactor计算: ti={}, 映射到{}频率范围: [{}, {}]", 
-                  ti, static_cast<int>(indicator_freq), start_indicator_index, end_indicator_index);
+    spdlog::debug("因子计算: ti={}, 映射到{}频率范围: [{}, {}]", ti, static_cast<int>(indicator_freq), start_indicator_index, end_indicator_index);
     
-    // 初始化结果序列
-    result.resize(sorted_stock_list.size());
+    // 构建临时的bar_runners用于调用原有逻辑
+    std::unordered_map<std::string, BarSeriesHolder*> temp_bar_runners;
     
-    for (size_t i = 0; i < sorted_stock_list.size(); ++i) {
-        const std::string& stock = sorted_stock_list[i];
+    // 从indicator获取数据并构建bar_runners
+    const auto& volume_storage = volume_indicator->get_storage();
+    for (const auto& stock : sorted_stock_list) {
+        auto stock_it = volume_storage.find(stock);
+        if (stock_it != volume_storage.end() && stock_it->second) {
+            temp_bar_runners[stock] = stock_it->second.get();
+        }
+    }
+    
+    // 调用原有的definition方法
+    return definition(temp_bar_runners, sorted_stock_list, ti);
+}
+
+// 新增：VolumeFactor的时间戳驱动实现
+GSeries VolumeFactor::definition_with_timestamp(
+    std::function<std::shared_ptr<Indicator>(const std::string&)> get_indicator,
+    const std::vector<std::string>& sorted_stock_list,
+    uint64_t timestamp
+) {
+    GSeries result;
+    
+    // 动态获取volume indicator的频率
+    auto volume_indicator = get_indicator("volume");
+    if (!volume_indicator) {
+        spdlog::error("找不到volume indicator，使用默认1分钟频率");
+        return result;
+    }
+    
+    Frequency indicator_freq = volume_indicator->frequency();
+    spdlog::debug("volume indicator频率: {}, 时间戳: {}", static_cast<int>(indicator_freq), timestamp);
+    
+    // 使用新的时间戳驱动函数计算可用的数据范围
+    auto [start_indicator_index, end_indicator_index] = get_available_data_range_from_timestamp(timestamp, indicator_freq);
+    
+    if (start_indicator_index < 0 || end_indicator_index < 0) {
+        spdlog::warn("时间戳{}不在交易时间内", timestamp);
+        return result;
+    }
+    
+    spdlog::debug("时间戳驱动因子计算: timestamp={}, 映射到{}频率范围: [{}, {}]", 
+                  timestamp, static_cast<int>(indicator_freq), start_indicator_index, end_indicator_index);
+    
+    // 构建临时的bar_runners用于调用原有逻辑
+    std::unordered_map<std::string, BarSeriesHolder*> temp_bar_runners;
+    // 这里需要根据实际情况构建，或者直接实现计算逻辑
+    
+    // 临时实现：直接计算逻辑
+    for (const auto& stock : sorted_stock_list) {
         double value = NAN;
         
-        // 从volume indicator的存储中获取数据
-        const auto& volume_storage = volume_indicator->get_storage();
-        auto stock_it = volume_storage.find(stock);
-        
-        if (stock_it != volume_storage.end() && stock_it->second) {
-            BarSeriesHolder* holder = stock_it->second.get();
-            
-            // 计算5分钟时间桶内的平均成交量
+        // 获取indicator数据
+        auto indicator = get_indicator("volume");
+        if (indicator) {
+            // 计算从开盘到当前时间的所有可用数据的平均值
             double total_volume = 0.0;
             int valid_count = 0;
             
-            for (int j = start_indicator_index; j <= end_indicator_index; ++j) {
-                if (j >= 0 && j < holder->get_m_bar("volume").get_size()) {
-                    double volume_value = holder->get_m_bar("volume").get(j);
-                    if (!std::isnan(volume_value)) {
-                        total_volume += volume_value;
-                        valid_count++;
-                    }
-                }
+            for (int i = start_indicator_index; i <= end_indicator_index; ++i) {
+                // 这里需要根据indicator的实际存储结构获取数据
+                // 暂时使用占位符
+                spdlog::debug("股票{}: 需要获取{}频率索引{}的数据", stock, static_cast<int>(indicator_freq), i);
             }
             
             if (valid_count > 0) {
-                value = total_volume / valid_count;  // 计算平均值
+                value = total_volume / valid_count;
             }
         }
         
-        result.set(i, value);
+        result.push(value);
     }
     
-    spdlog::debug("VolumeFactor计算完成: 有效数据 {}/{}", result.get_valid_num(), result.get_size());
     return result;
 }
 
@@ -193,10 +230,9 @@ GSeries PriceFactor::definition(
         double value = NAN;
         auto it = barRunner.find(stock);
         if (it != barRunner.end() && it->second) {
-            // 计算5分钟时间桶内的平均价格
-            double total_amount = 0.0;
-            double total_volume = 0.0;
-            int valid_count = 0;
+            // 计算VWAP：使用当前时间桶内最后一个有效数据点的amount/volume
+            // 由于amount和volume都是差分形式，VWAP = amount / volume
+            double vwap_value = NAN;
             
             for (int i = start_indicator_index; i <= end_indicator_index; ++i) {
                 // 修复：直接获取完整序列，然后访问第i个元素
@@ -211,23 +247,20 @@ GSeries PriceFactor::definition(
                     double volume = volume_series.get(i);
                     
                     if (!std::isnan(amount) && !std::isnan(volume) && volume > 0.0) {
-                        total_amount += amount;
-                        total_volume += volume;
-                        valid_count++;
-                        spdlog::debug("股票{}: 获取到有效数据 amount={}, volume={}", stock, amount, volume);
+                        vwap_value = amount / volume;  // 计算当前时间点的VWAP
+                        spdlog::debug("股票{}: 时间点{} VWAP={}, amount={}, volume={}", stock, i, vwap_value, amount, volume);
                     }
                 } else {
                     spdlog::debug("股票{}: 索引{}无效或超出范围", stock, i);
                 }
             }
             
-            // 计算平均价格
-            if (valid_count > 0 && total_volume > 0.0) {
-                value = total_amount / total_volume;  // 平均价格 = 总金额 / 总成交量
-                spdlog::debug("股票{}: 计算平均价格 value={}, total_amount={}, total_volume={}, valid_count={}", 
-                             stock, value, total_amount, total_volume, valid_count);
+            // 使用最后一个有效的VWAP值
+            if (!std::isnan(vwap_value)) {
+                value = vwap_value;
+                spdlog::debug("股票{}: 使用VWAP值 value={}", stock, value);
             } else {
-                spdlog::debug("股票{}: 没有有效数据或成交量为0", stock);
+                spdlog::debug("股票{}: 没有有效的VWAP数据", stock);
             }
         } else {
             spdlog::debug("股票{}: 找不到BarSeriesHolder", stock);
@@ -246,30 +279,23 @@ GSeries PriceFactor::definition_with_accessor(
 ) {
     GSeries result;
     
-    // 按需获取amount和volume indicator
-    auto amount_indicator = get_indicator("amount");
-    auto volume_indicator = get_indicator("volume");
+    // 从DiffIndicator获取数据
+    auto diff_indicator = get_indicator("diff_volume_amount");
     
-    if (!amount_indicator || !volume_indicator) {
-        spdlog::error("找不到amount或volume indicator");
+    if (!diff_indicator) {
+        spdlog::error("找不到DiffIndicator");
         return result;
     }
     
-    // 确保两个indicator使用相同的频率
-    Frequency amount_freq = amount_indicator->get_frequency();
-    Frequency volume_freq = volume_indicator->get_frequency();
-    
-    if (amount_freq != volume_freq) {
-        spdlog::error("amount和volume indicator频率不一致: amount={}, volume={}", 
-                     static_cast<int>(amount_freq), static_cast<int>(volume_freq));
-        return result;
-    }
+    // 获取DiffIndicator的频率
+    Frequency diff_freq = diff_indicator->get_frequency();
     
     // 使用通用的频率匹配函数计算时间桶映射范围
-    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, amount_freq, Frequency::F1MIN);
+    // Factor和Indicator都是1min频率，所以映射是1:1
+    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, diff_freq, get_frequency());
     
     spdlog::debug("PriceFactor计算: ti={}, 映射到{}频率范围: [{}, {}]", 
-                  ti, static_cast<int>(amount_freq), start_indicator_index, end_indicator_index);
+                  ti, static_cast<int>(diff_freq), start_indicator_index, end_indicator_index);
     
     // 初始化结果序列
     result.resize(sorted_stock_list.size());
@@ -278,47 +304,129 @@ GSeries PriceFactor::definition_with_accessor(
         const std::string& stock = sorted_stock_list[i];
         double value = NAN;
         
-        // 从amount和volume indicator的存储中获取数据
-        const auto& amount_storage = amount_indicator->get_storage();
-        const auto& volume_storage = volume_indicator->get_storage();
+        // 从DiffIndicator的存储中获取数据
+        const auto& diff_storage = diff_indicator->get_storage();
         
-        auto amount_stock_it = amount_storage.find(stock);
-        auto volume_stock_it = volume_storage.find(stock);
+        auto stock_it = diff_storage.find(stock);
         
-        if (amount_stock_it != amount_storage.end() && volume_stock_it != volume_storage.end() &&
-            amount_stock_it->second && volume_stock_it->second) {
+        if (stock_it != diff_storage.end() && stock_it->second) {
+            BarSeriesHolder* diff_holder = stock_it->second.get();
             
-            BarSeriesHolder* amount_holder = amount_stock_it->second.get();
-            BarSeriesHolder* volume_holder = volume_stock_it->second.get();
-            
-            // 计算5分钟时间桶内的平均价格（amount/volume）
-            double total_amount = 0.0;
-            double total_volume = 0.0;
-            int valid_count = 0;
+            // 计算VWAP：使用当前时间桶内最后一个有效数据点的amount/volume
+            // 由于amount和volume都是差分形式，VWAP = amount / volume
+            double vwap_value = NAN;
             
             for (int j = start_indicator_index; j <= end_indicator_index; ++j) {
-                if (j >= 0 && j < amount_holder->get_m_bar("amount").get_size() && 
-                    j < volume_holder->get_m_bar("volume").get_size()) {
+                if (j >= 0 && j < diff_holder->get_m_bar("amount").get_size() && 
+                    j < diff_holder->get_m_bar("volume").get_size()) {
                     
-                    double amount_value = amount_holder->get_m_bar("amount").get(j);
-                    double volume_value = volume_holder->get_m_bar("volume").get(j);
+                    // 从同一个holder的不同output_key读取amount和volume
+                    double amount_value = diff_holder->get_m_bar("amount").get(j);
+                    double volume_value = diff_holder->get_m_bar("volume").get(j);
                     
                     if (!std::isnan(amount_value) && !std::isnan(volume_value) && volume_value > 0) {
-                        total_amount += amount_value;
-                        total_volume += volume_value;
-                        valid_count++;
+                        vwap_value = amount_value / volume_value;  // 计算当前时间点的VWAP
+                        spdlog::debug("股票{}: 时间点{} VWAP={}, amount={}, volume={}", stock, j, vwap_value, amount_value, volume_value);
                     }
                 }
             }
             
-            if (valid_count > 0 && total_volume > 0) {
-                value = total_amount / total_volume;  // 计算加权平均价格
+            // 使用最后一个有效的VWAP值
+            if (!std::isnan(vwap_value)) {
+                value = vwap_value;
+                spdlog::debug("股票{}: 使用VWAP值 value={}", stock, value);
+            } else {
+                spdlog::debug("股票{}: 没有有效的VWAP数据", stock);
             }
+        } else {
+            spdlog::debug("股票{}: 找不到DiffIndicator的BarSeriesHolder", stock);
         }
         
         result.set(i, value);
     }
     
     spdlog::debug("PriceFactor计算完成: 有效数据 {}/{}", result.get_valid_num(), result.get_size());
+    return result;
+} 
+
+// 新增：PriceFactor的时间戳驱动实现
+GSeries PriceFactor::definition_with_timestamp(
+    std::function<std::shared_ptr<Indicator>(const std::string&)> get_indicator,
+    const std::vector<std::string>& sorted_stock_list,
+    uint64_t timestamp
+) {
+    GSeries result;
+    
+    // 从DiffIndicator获取数据
+    auto diff_indicator = get_indicator("diff_volume_amount");
+    
+    if (!diff_indicator) {
+        spdlog::error("找不到DiffIndicator");
+        return result;
+    }
+    
+    // 获取DiffIndicator的频率
+    Frequency diff_freq = diff_indicator->frequency();
+    spdlog::debug("DiffIndicator频率: {}, 时间戳: {}", static_cast<int>(diff_freq), timestamp);
+    
+    // 使用新的时间戳驱动函数计算可用的数据范围
+    auto [start_indicator_index, end_indicator_index] = get_available_data_range_from_timestamp(timestamp, diff_freq);
+
+
+    if (start_indicator_index < 0 || end_indicator_index < 0) {
+        spdlog::warn("时间戳{}不在交易时间内", timestamp);
+        return result;
+    }
+    
+    spdlog::debug("时间戳驱动PriceFactor计算: timestamp={}, 映射到{}频率范围: [{}, {}]", 
+                  timestamp, static_cast<int>(diff_freq), start_indicator_index, end_indicator_index);
+    
+    // 初始化结果序列
+    result.resize(sorted_stock_list.size());
+    
+    for (size_t i = 0; i < sorted_stock_list.size(); ++i) {
+        const std::string& stock = sorted_stock_list[i];
+        double value = NAN;
+        
+        // 从DiffIndicator的存储中获取数据
+        const auto& diff_storage = diff_indicator->get_storage();
+        
+        auto stock_it = diff_storage.find(stock);
+        
+        if (stock_it != diff_storage.end() && stock_it->second) {
+            BarSeriesHolder* diff_holder = stock_it->second.get();
+            
+            // 计算VWAP：使用当前时间点的amount和volume计算价格
+            // 由于amount和volume都是差分形式，VWAP = amount / volume
+            if (end_indicator_index >= 0 && end_indicator_index < diff_holder->get_m_bar("amount").get_size() && 
+                end_indicator_index < diff_holder->get_m_bar("volume").get_size()) {
+
+                int end_indicator_index_int = end_indicator_index;
+                if(end_indicator_index_int >= 60)
+                {
+                    double amount_value = diff_holder->get_m_bar("amount").get(end_indicator_index_int);
+                    double volume_value = diff_holder->get_m_bar("volume").get(end_indicator_index_int);
+                }
+                
+                double amount_value = diff_holder->get_m_bar("amount").get(end_indicator_index);
+                double volume_value = diff_holder->get_m_bar("volume").get(end_indicator_index);
+                
+                if (!std::isnan(amount_value) && !std::isnan(volume_value) && volume_value > 0) {
+                    value = amount_value / volume_value;  // 计算VWAP
+                    spdlog::debug("股票{}: 计算VWAP value={}, amount={}, volume={}", 
+                                 stock, value, amount_value, volume_value);
+                } else {
+                    spdlog::debug("股票{}: 当前时间点数据无效 amount={}, volume={}", stock, amount_value, volume_value);
+                }
+            } else {
+                spdlog::debug("股票{}: 当前时间点索引{}无效或超出范围", stock, end_indicator_index);
+            }
+        } else {
+            spdlog::debug("股票{}: 找不到DiffIndicator的BarSeriesHolder", stock);
+        }
+        
+        result.set(i, value);
+    }
+    
     return result;
 } 

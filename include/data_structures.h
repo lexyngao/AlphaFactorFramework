@@ -1036,6 +1036,24 @@ public:
     // 获取更新频率
     Frequency frequency() const { return frequency_; }
     
+    // 新增：设置频率并重新初始化相关参数
+    void set_frequency(const std::string& freq_str) {
+        // 根据字符串设置频率
+        if (freq_str == "15S" || freq_str == "15s") {
+            frequency_ = Frequency::F15S;
+        } else if (freq_str == "1min") {
+            frequency_ = Frequency::F1MIN;
+        } else if (freq_str == "5min") {
+            frequency_ = Frequency::F5MIN;
+        } else if (freq_str == "30min") {
+            frequency_ = Frequency::F30MIN;
+        } else {
+            frequency_ = Frequency::F15S; // 默认15S
+        }
+        // 重新初始化频率相关参数
+        init_frequency_params();
+    }
+    
     // 新增：输出时间桶信息的辅助函数
     void log_time_bucket_info(const std::string& symbol, int bucket_index, double value) const {
         std::string time_str = format_time_bucket(bucket_index);
@@ -1242,15 +1260,28 @@ protected:
     std::string name_;          // 因子名称（如"volatility"）
     std::string id_;            // 类名（如"VolatilityFactor"）
     std::string path_;          // 持久化基础路径
-    const Frequency frequency_ = Frequency::F5MIN;  // 因子固定为5分钟频率
+    Frequency frequency_ = Frequency::F1MIN;  // 因子频率，可在构造函数中设置
     // 存储结构：key为时间bar索引（如9:35为0），内层key为因子名
     std::map<int, std::map<std::string, GSeries>> factor_storage;
     // 新增：存储依赖的indicators
     std::vector<const Indicator*> dependent_indicators_;
 
 public:
-    Factor(std::string name, std::string id, std::string path)
-            : name_(std::move(name)), id_(std::move(id)), path_(std::move(path)) {}
+    Factor(std::string name, std::string id, std::string path, std::string frequency_str = "1min")
+            : name_(std::move(name)), id_(std::move(id)), path_(std::move(path)) {
+        // 根据字符串设置频率
+        if (frequency_str == "15S") {
+            frequency_ = Frequency::F15S;
+        } else if (frequency_str == "1min") {
+            frequency_ = Frequency::F1MIN;
+        } else if (frequency_str == "5min") {
+            frequency_ = Frequency::F5MIN;
+        } else if (frequency_str == "30min") {
+            frequency_ = Frequency::F30MIN;
+        } else {
+            frequency_ = Frequency::F1MIN; // 默认1min
+        }
+    }
 
     virtual ~Factor() = default;
 
@@ -1287,9 +1318,29 @@ public:
         factor_storage[ti][name_] = result;
     }
 
-    // 获取完整存储路径（path/date/5min/name.gz）
+    // 新增：基于时间戳的因子计算接口（时间戳驱动）
+    virtual GSeries definition_with_timestamp(
+        std::function<std::shared_ptr<Indicator>(const std::string&)> get_indicator,
+        const std::vector<std::string>& sorted_stock_list,
+        uint64_t timestamp  // 时间戳驱动
+    ) {
+        // 默认实现：将时间戳转换为ti，然后调用原有的definition方法
+        // 这样可以保持向后兼容性
+        spdlog::warn("Factor::definition_with_timestamp需要子类重写，当前使用默认的ti转换");
+        return GSeries();
+    }
+
+    // 获取完整存储路径（path/date/frequency/name.gz）
     std::string get_full_storage_path(const std::string& date) const {
-        return path_ + "/" + date + "/5min/" + name_ + ".gz";
+        std::string freq_str;
+        switch (frequency_) {
+            case Frequency::F15S: freq_str = "15S"; break;
+            case Frequency::F1MIN: freq_str = "1min"; break;
+            case Frequency::F5MIN: freq_str = "5min"; break;
+            case Frequency::F30MIN: freq_str = "30min"; break;
+            default: freq_str = "1min"; break;
+        }
+        return path_ + "/" + date + "/" + freq_str + "/" + name_ + ".gz";
     }
 
     // 获取因子名称
@@ -1297,6 +1348,9 @@ public:
     const std::string& get_name() const { return name_; }
     const std::string& get_id() const { return id_; }
     const std::string& get_path() const { return path_; }
+    
+    // 获取因子频率
+    Frequency get_frequency() const { return frequency_; }
     
     // 获取存储结构
     const std::map<int, std::map<std::string, GSeries>>& get_storage() const {
@@ -1360,6 +1414,68 @@ inline std::pair<int, int> get_time_bucket_range(int factor_ti, Frequency indica
         int end_index = start_index + (factor_seconds / indicator_seconds) - 1;
         return {start_index, end_index};
     }
+}
+
+// 新增：基于时间戳计算可用的数据范围（时间戳驱动）
+inline std::pair<int, int> get_available_data_range_from_timestamp(
+    uint64_t timestamp, 
+    Frequency indicator_freq
+) {
+    if (timestamp == 0) return {-1, -1};
+
+    // 复用你已有的时间桶计算逻辑
+    // 1. 转换为北京时间
+    int64_t utc_sec = timestamp / 1000000000;
+    int64_t beijing_sec = utc_sec + 8 * 3600;  // UTC + 8小时 = 北京时间
+    int64_t beijing_seconds_in_day = beijing_sec % 86400;
+    int hour = static_cast<int>(beijing_seconds_in_day / 3600);
+    int minute = static_cast<int>((beijing_seconds_in_day % 3600) / 60);
+    int second = static_cast<int>(beijing_seconds_in_day % 60);
+    int total_minutes = hour * 60 + minute;
+
+    // 交易时间定义（与你已有的逻辑保持一致）
+    const int time_900 = 9 * 60 + 0;    // 9:00
+    const int time_930 = 9 * 60 + 30;   // 9:30
+    const int time_1130 = 11 * 60 + 30; // 11:30
+    const int time_1300 = 13 * 60 + 0;  // 13:00
+    const int time_1457 = 14 * 60 + 57; // 14:57
+
+    // 检查是否在交易时间内
+    if (total_minutes < time_900 || total_minutes >= time_1457) {
+        return {-1, -1};  // 非交易时间
+    }
+
+    // 计算从开盘到当前时间的秒数
+    int seconds_since_open = 0;
+    if (total_minutes >= time_900 && total_minutes < time_930) {
+        // 9:00:00-9:30:00 映射到 9:30 桶 (bucket=0)
+        seconds_since_open = 0;
+    } else if (total_minutes >= time_930 && total_minutes < time_1130) {
+        // 9:30:00-11:30:00 正常映射
+        seconds_since_open = (total_minutes - time_930) * 60 + second;
+    } else if (total_minutes >= time_1130 && total_minutes < time_1300) {
+        // 11:30:00-13:00:00 映射到 13:00 桶
+        seconds_since_open = (time_1130 - time_930) * 60;  // 上午总秒数
+    } else if (total_minutes >= time_1300 && total_minutes < time_1457) {
+        // 13:00:00-14:57:00 正常映射
+        seconds_since_open = (time_1130 - time_930) * 60 + (total_minutes - time_1300) * 60 + second;
+    }
+
+    // 根据indicator频率计算可用的时间桶数量
+    int indicator_seconds = 0;
+    switch (indicator_freq) {
+        case Frequency::F15S: indicator_seconds = 15; break;
+        case Frequency::F1MIN: indicator_seconds = 60; break;
+        case Frequency::F5MIN: indicator_seconds = 300; break;
+        case Frequency::F30MIN: indicator_seconds = 1800; break;
+    }
+    
+    // 计算可用的时间桶范围（从0到当前时间）
+    int available_buckets = seconds_since_open / indicator_seconds;
+    int start_index = 0;
+    int end_index = std::max(0, available_buckets);
+    
+    return {start_index, end_index};
 }
 
 #endif //ALPHAFACTORFRAMEWORK_DATA_STRUCTURES_H

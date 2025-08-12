@@ -85,10 +85,10 @@ public:
                 spdlog::error("Invalid Module config (missing attributes), skipping");
                 continue;
             }
-            // 校验Factor频率（仅允许5min，PDF 1.2节）#TODO：为了debug先去掉频率限制
+            // 校验Factor频率（仅允许5min，PDF 1.2节）#TODO：为了debug先改掉频率限制为1min
 //            if (module.handler == "Factor" && module.frequency != "5min") {
-            if (module.handler == "Factor") {
-                spdlog::error("Factor {} frequency must be 5min (got {})", module.name, module.frequency);
+            if (module.handler == "Factor" && module.frequency != "1min") {
+                spdlog::error("Factor {} frequency must be 1min (got {})", module.name, module.frequency);
                 continue;
             }
             // 校验Indicator频率（仅允许15S/1min/5min/30min，PDF 1.2节）

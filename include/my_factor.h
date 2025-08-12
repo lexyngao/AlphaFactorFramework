@@ -6,7 +6,7 @@
 
 class VolumeFactor : public Factor {
 public:
-    VolumeFactor(const ModuleConfig& module) : Factor(module.name, module.id, module.path) {}
+    VolumeFactor(const ModuleConfig& module) : Factor(module.name, module.id, module.path, module.frequency) {}
 
     // 实现Factor的纯虚函数（保持兼容性）
     void Calculate(const std::vector<const Indicator*>& indicators) override {
@@ -29,11 +29,18 @@ public:
         const std::vector<std::string>& sorted_stock_list,
         int ti
     ) override;
+
+    // 新增：时间戳驱动的实现
+    GSeries definition_with_timestamp(
+        std::function<std::shared_ptr<Indicator>(const std::string&)> get_indicator,
+        const std::vector<std::string>& sorted_stock_list,
+        uint64_t timestamp
+    ) override;
 };
 
 class PriceFactor : public Factor {
 public:
-    PriceFactor(const ModuleConfig& module) : Factor(module.name, module.id, module.path) {}
+    PriceFactor(const ModuleConfig& module) : Factor(module.name, module.id, module.path, module.frequency) {}
 
     // 实现Factor的纯虚函数（保持兼容性）
     void Calculate(const std::vector<const Indicator*>& indicators) override {
@@ -55,5 +62,12 @@ public:
         std::function<std::shared_ptr<Indicator>(const std::string&)> get_indicator,
         const std::vector<std::string>& sorted_stock_list,
         int ti
+    ) override;
+
+    // 新增：时间戳驱动的实现
+    GSeries definition_with_timestamp(
+        std::function<std::shared_ptr<Indicator>(const std::string&)> get_indicator,
+        const std::vector<std::string>& sorted_stock_list,
+        uint64_t timestamp
     ) override;
 }; 

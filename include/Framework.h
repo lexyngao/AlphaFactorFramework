@@ -91,68 +91,44 @@ public:
         spdlog::info("开始运行引擎，数据量: {}", all_tick_datas.size());
         
         // 重置所有指标的计算状态和差分存储
-        engine_.reset_all_indicator_status();
+//        engine_.reset_all_indicator_status();
         engine_.reset_diff_storage();
 
-        
         // 设置factor依赖关系
         setup_factor_dependencies();
         
-        // 生成时间事件并插入到数据流中
-        std::vector<MarketAllField> all_data_with_time = all_tick_datas;
-
-        // 生成5分钟间隔的时间事件（Factor固定为5分钟频率） #TODO：为了debug改成60s
-        std::vector<uint64_t> time_points = generate_time_points(60, config_.calculate_date);  // 300秒 = 5分钟
+        // 生成时间事件（不插入数据流）
+        std::vector<uint64_t> time_points = generate_time_points(60, config_.calculate_date);
         spdlog::info("生成了 {} 个时间事件", time_points.size());
         
-        // 将时间事件插入到数据流中
-        for (uint64_t timestamp : time_points) {
-            MarketAllField time_field(
-                MarketBufferType::Time,
-                "",  // 时间事件不需要股票代码
-                timestamp,
-                0    // 时间事件的序列号设为0
-            );
-            time_field.time_trigger = timestamp;
-            all_data_with_time.push_back(time_field);
-        }
-        
-        // 重新排序所有数据（包括时间事件）
-        DataLoader::sort_market_datas(all_data_with_time);
-        spdlog::info("数据重新排序完成，总数据量: {}", all_data_with_time.size());
-        
-        // 按股票分组处理数据，将时间事件分发到各股票
+        // 按股票分组处理行情数据（不包含时间事件）
         std::unordered_map<std::string, std::vector<MarketAllField>> stock_data_map;
-        for (const auto& data : all_data_with_time) {
-            if (data.type == MarketBufferType::Time) {
-                // 时间事件分发到所有股票
-                for (const auto& stock : stock_list_) {
-                    MarketAllField time_field = data;
-                    time_field.symbol = stock;  // 为每个股票设置股票代码
-                    stock_data_map[stock].push_back(time_field);
-                }
-            } else {
-                // 普通数据按股票分组
-                stock_data_map[data.symbol].push_back(data);
-            }
+        for (const auto& data : all_tick_datas) {
+            // 只处理行情数据，不处理时间事件
+            stock_data_map[data.symbol].push_back(data);
         }
         
         spdlog::info("数据分组完成，共{}只股票", stock_data_map.size());
         
-        // 为每只股票创建独立线程处理
-        std::vector<std::thread> stock_threads;
+        // 启动Indicator线程组（按股票）
+        std::vector<std::thread> indicator_threads;
         for (const auto& [stock, stock_data] : stock_data_map) {
-            stock_threads.emplace_back([this, stock_code = stock, data = stock_data]() {
-                spdlog::info("开始处理股票{}的数据，共{}条", stock_code, data.size());
+            indicator_threads.emplace_back([this, stock_code = stock, data = stock_data]() {
+                spdlog::info("开始处理股票{}的行情数据，共{}条", stock_code, data.size());
                 for (const auto& tick_data : data) {
                     engine_.update(tick_data);
                 }
-                spdlog::info("股票{}数据处理完成", stock_code);
+                spdlog::info("股票{}行情数据处理完成", stock_code);
             });
         }
         
-        // 等待所有线程完成
-        for (auto& thread : stock_threads) {
+        // 启动Factor线程组（按时间事件顺序，每个时间事件内按Factor多线程）
+        spdlog::info("启动Factor线程组，处理时间事件");
+        engine_.process_factor_time_events(time_points);
+        
+        // 等待所有Indicator线程完成
+        spdlog::info("等待所有Indicator线程完成...");
+        for (auto& thread : indicator_threads) {
             thread.join();
         }
         
@@ -173,19 +149,48 @@ public:
     }
 
     void save_all_results() {
-        for (const auto& module : config_.modules) {
-            if (module.handler == "Indicator") {
-                auto it = indicator_map_.find(module.name);
-                if (it != indicator_map_.end()) {
-                    ResultStorage::save_indicator(it->second, module, config_.calculate_date);
-                }
-            } else if (module.handler == "Factor") {
-                auto it = factor_map_.find(module.name);
-                if (it != factor_map_.end()) {
-                    ResultStorage::save_factor(it->second, module, config_.calculate_date, stock_list_);
+        spdlog::info("开始保存所有结果...");
+        
+        // 添加线程同步，确保所有计算线程完成
+        // 等待引擎完成所有计算
+        engine_.wait_for_completion();
+        
+        try {
+            for (const auto& module : config_.modules) {
+                try {
+                    if (module.handler == "Indicator") {
+                        auto it = indicator_map_.find(module.name);
+                        if (it != indicator_map_.end() && it->second) {
+                            spdlog::info("保存指标: {}", module.name);
+                            if (!ResultStorage::save_indicator(it->second, module, config_.calculate_date)) {
+                                spdlog::error("保存指标[{}]失败", module.name);
+                            }
+                        } else {
+                            spdlog::warn("指标[{}]不存在或为空", module.name);
+                        }
+                    } else if (module.handler == "Factor") {
+                        auto it = factor_map_.find(module.name);
+                        if (it != factor_map_.end() && it->second) {
+                            spdlog::info("保存因子: {}", module.name);
+                            if (!ResultStorage::save_factor(it->second, module, config_.calculate_date, stock_list_)) {
+                                spdlog::error("保存因子[{}]失败", module.name);
+                            }
+                        } else {
+                            spdlog::warn("因子[{}]不存在或为空", module.name);
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    spdlog::error("保存模块[{}]时发生异常: {}", module.name, e.what());
+                } catch (...) {
+                    spdlog::error("保存模块[{}]时发生未知异常", module.name);
                 }
             }
+        } catch (const std::exception& e) {
+            spdlog::error("保存结果时发生异常: {}", e.what());
+            throw; // 重新抛出异常，让上层处理
         }
+        
+        spdlog::info("所有结果保存完成");
     }
     
     // 新增：保存指定频率的DiffIndicator结果
@@ -250,11 +255,11 @@ private:
         
         spdlog::debug("生成时间点: 日期={}-{:02d}-{:02d}, 间隔={}秒", year, month, day, interval_seconds);
         
-        // 交易时间：9:30-11:30, 13:00-15:00
+        // 交易时间：9:30-11:30, 13:00-14:57
         const int morning_start = 9 * 3600 + 30 * 60;   // 9:30
         const int morning_end = 11 * 3600 + 30 * 60;    // 11:30
         const int afternoon_start = 13 * 3600;           // 13:00
-        const int afternoon_end = 15 * 3600;             // 15:00
+        const int afternoon_end = 14 * 3600 + 57 * 60;  // 14:57
         
         // 生成上午的时间点
         for (int time = morning_start; time < morning_end; time += interval_seconds) {

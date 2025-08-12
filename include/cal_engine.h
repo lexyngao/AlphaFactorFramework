@@ -277,7 +277,7 @@ public:
             // 立即同步计算所有Indicator（在当前线程中）
             for (auto &[name, indicator]: indicators_) {
                 try {
-                    indicator->Calculate(sync_tick);
+                    indicator->try_calculate(sync_tick);
                 } catch (const std::exception &e) {
                     spdlog::error("Indicator[{}] 计算失败 for {}: {}", name, sync_tick.symbol, e.what());
                 }
@@ -286,54 +286,77 @@ public:
             // 清理数据，准备下一个周期
             sync_data.orders.clear();
             sync_data.trans.clear();
-
-            // 可选：重置SyncTickData以避免数据积累（根据需要）
-            // sync_data.reset();
         }
     }
 
-    // 时间触发因子计算
-    void onTime(uint64_t timestamp) {
-        // 根据时间戳计算5分钟时间桶索引（Factor固定为5分钟频率） #TODO：for debug
-        int ti = calculate_time_bucket(timestamp, Frequency::F1MIN);
+    // 新增：独立的Factor时间处理（按时间事件顺序，每个时间事件内按Factor多线程）
+    void process_factor_time_events(const std::vector<uint64_t>& time_events) {
+        spdlog::info("开始处理{}个时间事件", time_events.size());
         
-        if (ti < 0) {
-            spdlog::warn("无法计算时间桶索引，跳过因子计算，timestamp: {}", timestamp);
-            return;
-        }
-
-        spdlog::debug("Time事件触发因子计算，timestamp: {}, ti: {}", timestamp, ti);
-
-        // 提交因子计算任务
-        {
-            std::lock_guard<std::mutex> lock(queue_mutex_);
-            for (auto& [factor_name, factor] : factors_) {
-                auto factor_ptr = factor;  // 创建局部副本避免捕获冲突
-                task_queue_.push([this, factor_ptr, ti]() {
+        for (const auto& timestamp : time_events) {
+            spdlog::debug("处理时间事件: {}", timestamp);
+            
+            // 创建Factor线程组，每个Factor一个线程
+//            std::vector<std::thread> factor_threads;
+            
+            for (auto& [factor_name, factor_ptr] : factors_) {
+//                factor_threads.emplace_back([this, factor_ptr = factor_ptr, timestamp]() {
                     try {
-                        // 让Factor直接访问它需要的indicator
-                        // 通过lambda捕获this，让Factor能够按需访问indicator
+                        // 定义get_indicator函数
                         auto get_indicator = [this](const std::string& name) -> std::shared_ptr<Indicator> {
                             std::lock_guard<std::mutex> lock(queue_mutex_);
                             auto it = indicators_.find(name);
                             return (it != indicators_.end()) ? it->second : nullptr;
                         };
                         
-                        // 调用因子的definition函数，传递indicator访问器
-                        GSeries result = factor_ptr->definition_with_accessor(get_indicator, stock_list_, ti);
+                        // 优先使用时间戳驱动的接口
+                        GSeries result;
+                        
+                        // 检查Factor是否支持时间戳驱动
+                        if (factor_ptr->get_name() != "default") {  // 简单的检查，实际可以添加虚函数判断
+                            // 尝试使用时间戳驱动
+                            result = factor_ptr->definition_with_timestamp(get_indicator, stock_list_, timestamp);
+                            
+                            // 如果时间戳驱动返回空结果，回退到ti驱动
+                            if (result.get_size() == 0) {
+                                int ti = calculate_time_bucket(timestamp, factor_ptr->get_frequency());
+                                if (ti >= 0) {
+                                    result = factor_ptr->definition_with_accessor(get_indicator, stock_list_, ti);
+                                }
+                            }
+                        } else {
+                            // 回退到原有的ti驱动方式
+                            int ti = calculate_time_bucket(timestamp, factor_ptr->get_frequency());
+                            if (ti >= 0) {
+                                result = factor_ptr->definition_with_accessor(get_indicator, stock_list_, ti);
+                            }
+                        }
                         
                         // 将结果存储到factor的存储结构中
-                        factor_ptr->set_factor_result(ti, result);
+                        if (result.get_size() > 0) {
+                            int ti = calculate_time_bucket(timestamp, factor_ptr->get_frequency());
+                            if (ti >= 0) {
+                                factor_ptr->set_factor_result(ti, result);
+                            }
+                        }
                         
-                        spdlog::debug("因子[{}]计算完成，时间桶: {}, 有效数据: {}/{}", 
-                                     factor_ptr->get_name(), ti, result.get_valid_num(), result.get_size());
+                        spdlog::debug("Factor[{}]计算完成，时间戳: {}, 有效数据: {}/{}", 
+                                     factor_ptr->get_name(), timestamp, result.get_valid_num(), result.get_size());
                     } catch (const std::exception& e) {
-                        spdlog::error("因子[{}]计算失败: {}", factor_ptr->get_name(), e.what());
+                        spdlog::error("Factor[{}]计算失败: {}", factor_ptr->get_name(), e.what());
                     }
-                });
+//                });
             }
+            
+//            // 等待当前时间事件的所有Factor线程完成
+//            for (auto& thread : factor_threads) {
+//                thread.join();
+//            }
+//
+            spdlog::debug("时间事件 {} 的所有Factor处理完成", timestamp);
         }
-        task_cond_.notify_all();  // 唤醒所有线程处理因子计算
+        
+        spdlog::info("所有Factor时间事件处理完成");
     }
 
     // 计算时间桶索引（通用函数，支持不同频率）
@@ -395,9 +418,9 @@ public:
         return ti;
     }
 
-    // 统一更新入口（单线程调用，确保时序）
+    // 统一更新入口（只处理行情事件，移除时间事件处理）
     void update(const MarketAllField& field) {
-        // 单线程处理所有行情数据，保证时间顺序
+        // 只处理行情数据，时间事件由独立线程处理
         switch (field.type) {
             case MarketBufferType::Order:
                 onOrder(field.get_order());
@@ -408,12 +431,28 @@ public:
             case MarketBufferType::Tick:
                 onTick(field.get_tick());
                 break;
-            case MarketBufferType::Time:
-                onTime(field.get_time_trigger());
-                break;
             default:
                 spdlog::warn("未知数据类型: {}", static_cast<int>(field.type));
         }
+    }
+
+    // 等待所有计算任务完成
+    void wait_for_completion() {
+        spdlog::info("等待所有计算任务完成...");
+        
+        // 等待任务队列清空
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            while (!task_queue_.empty()) {
+                spdlog::debug("等待任务队列清空，剩余任务数: {}", task_queue_.size());
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+        
+        // 等待所有工作线程完成当前任务
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        
+        spdlog::info("所有计算任务已完成");
     }
 };
 

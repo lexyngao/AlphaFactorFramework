@@ -81,14 +81,40 @@ public:
 
             int bars_per_day = indicator->get_bars_per_day();
             for (const auto& [stock_code, holder_ptr] : indicator_storage) {
-                if (!holder_ptr) continue;
+                if (!holder_ptr) {
+                    spdlog::warn("指标[{}]的股票[{}]holder为空，跳过", module.name, stock_code);
+                    continue;
+                }
+                
                 const BarSeriesHolder* holder = holder_ptr.get();
+                if (!holder) {
+                    spdlog::warn("指标[{}]的股票[{}]holder指针为空，跳过", module.name, stock_code);
+                    continue;
+                }
+                
+                // 对于DiffIndicator，需要特殊处理
+                std::string key_to_use = module.name;
+                if (module.id == "DiffIndicator") {
+                    // DiffIndicator使用第一个字段的output_key作为默认键
+                    // 这里我们暂时使用"volume"作为默认键，实际应该从DiffIndicator获取
+                    key_to_use = "volume";
+                    spdlog::debug("DiffIndicator[{}]使用键名: {}", module.name, key_to_use);
+                }
+                
                 // T日数据现在存储在MBarSeries中
-                GSeries series = holder->get_m_bar(module.name);
+                GSeries series = holder->get_m_bar(key_to_use);
+                
+                // 检查series是否有效
+                if (series.get_size() == 0) {
+                    spdlog::warn("指标[{}]的股票[{}]键[{}]数据为空，跳过", module.name, stock_code, key_to_use);
+                    continue;
+                }
+                
                 // 确保series长度和bars_per_day一致
                 if (series.get_size() < bars_per_day) {
                     series.resize(bars_per_day);
                 }
+                
                 for (int ti = 0; ti < bars_per_day; ++ti) {
                     double value = series.get(ti);
                     bar_data[ti][stock_code] = value;
@@ -239,11 +265,72 @@ static bool load_single_day_indicator(
         const std::string& date,
         const std::vector<std::string>& T_stock_list
 ) {
-    fs::path file_path = fs::path(module.path) / date / module.frequency /
-                         fmt::format("{}_{}_{}.csv.gz", module.name, date, module.frequency);
-    if (!fs::exists(file_path)) {
-        return false;
+    // 更新indicator的频率为配置文件中指定的频率
+    indicator->set_frequency(module.frequency);
+    spdlog::info("更新指标[{}]频率为: {}", module.name, module.frequency);
+    
+    fs::path base_path = fs::path(module.path) / date / module.frequency;
+    
+    // 1. 尝试加载单文件（兼容现有Indicator）
+    fs::path single_file = base_path / fmt::format("{}_{}_{}.csv.gz", 
+                                                   module.name, date, module.frequency);
+    if (fs::exists(single_file)) {
+        spdlog::info("发现单文件指标：{}", single_file.string());
+        return load_single_indicator_file(indicator, module, date, T_stock_list, single_file);
     }
+    
+    // 2. 扫描多文件（DiffIndicator等）
+    std::string pattern = fmt::format("{}_*_{}_{}.csv.gz", 
+                                     module.name, date, module.frequency);
+    std::vector<fs::path> files = scan_indicator_files(base_path, pattern);
+    
+    if (!files.empty()) {
+        spdlog::info("发现多文件指标，共{}个文件", files.size());
+        return load_multiple_indicator_files(indicator, module, date, T_stock_list, files);
+    }
+    
+    spdlog::warn("未找到指标文件：{}", base_path.string());
+    return false;
+}
+
+// 辅助函数：扫描匹配的文件
+static std::vector<fs::path> scan_indicator_files(
+        const fs::path& dir, 
+        const std::string& pattern
+) {
+    std::vector<fs::path> files;
+    if (!fs::exists(dir)) {
+        return files;
+    }
+    
+    // 简单的通配符匹配：将*替换为实际的文件名部分
+    std::string prefix = pattern.substr(0, pattern.find('*'));
+    std::string suffix = pattern.substr(pattern.find('*') + 1);
+    
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (entry.is_regular_file()) {
+            std::string filename = entry.path().filename().string();
+            if (filename.size() >= prefix.size() + suffix.size() &&
+                filename.substr(0, prefix.size()) == prefix &&
+                filename.substr(filename.size() - suffix.size()) == suffix) {
+                files.push_back(entry.path());
+            }
+        }
+    }
+    
+    // 按文件名排序，确保加载顺序一致
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+// 辅助函数：加载单个指标文件
+static bool load_single_indicator_file(
+        const std::shared_ptr<Indicator>& indicator,
+        const ModuleConfig& module,
+        const std::string& date,
+        const std::vector<std::string>& T_stock_list,
+        const fs::path& file_path
+) {
     // 解析文件到stock->GSeries
     std::unordered_map<std::string, GSeries> stock_series;
     if (!parse_indicator_gz_to_map(file_path, module.name, date, T_stock_list, stock_series)) {
@@ -258,6 +345,54 @@ static bool load_single_day_indicator(
             holder_it->second->offline_set_m_bar(module.name, stock_series[stock]);
         }
     }
+    return true;
+}
+
+// 辅助函数：加载多个指标文件（解析output_key并存储）
+static bool load_multiple_indicator_files(
+        const std::shared_ptr<Indicator>& indicator,
+        const ModuleConfig& module,
+        const std::string& date,
+        const std::vector<std::string>& T_stock_list,
+        const std::vector<fs::path>& files
+) {
+    for (const auto& file_path : files) {
+        std::string filename = file_path.filename().string();
+        
+        // 解析文件名格式：{module.name}_{output_key}_{date}_{frequency}.csv.gz
+        // 例如：DiffIndicator_volume_20240701_1min.csv.gz
+        std::string prefix = fmt::format("{}_", module.name);
+        std::string suffix = fmt::format("_{}_{}.csv.gz", date, module.frequency);
+        
+        if (filename.size() <= prefix.size() + suffix.size()) {
+            spdlog::warn("文件名格式错误：{}", filename);
+            continue;
+        }
+        
+        std::string output_key = filename.substr(
+            prefix.size(), 
+            filename.size() - prefix.size() - suffix.size()
+        );
+        
+        spdlog::info("加载多文件指标：{} -> output_key: {}", filename, output_key);
+        
+        // 解析文件到stock->GSeries
+        std::unordered_map<std::string, GSeries> stock_series;
+        if (!parse_indicator_gz_to_map(file_path, module.name, date, T_stock_list, stock_series)) {
+            spdlog::error("解析T日[{}]指标文件失败：{}", date, filename);
+            continue;
+        }
+        
+        // 直接写入indicator的存储结构（T日数据），使用output_key作为存储键
+        for (const auto& stock : T_stock_list) {
+            auto holder_it = indicator->get_storage().find(stock);
+            if (holder_it != indicator->get_storage().end() && holder_it->second) {
+                // T日数据使用offline_set_m_bar方法存储到MBarSeries中，键名为output_key
+                holder_it->second->offline_set_m_bar(output_key, stock_series[stock]);
+            }
+        }
+    }
+    
     return true;
 }
 
@@ -285,7 +420,7 @@ static bool save_factor(
         }
 
         // 2. 创建存储目录
-        fs::path base_path = fs::path(module.path) / date / "5min";
+        fs::path base_path = fs::path(module.path) / date / "1min";
         if (!fs::exists(base_path) && !fs::create_directories(base_path)) {
             spdlog::error("创建目录失败: {}", base_path.string());
             return false;
@@ -299,7 +434,7 @@ static bool save_factor(
         }
 
         // 4. 生成GZ压缩文件（格式：因子名_日期_5min.csv.gz）
-        std::string filename = fmt::format("{}_{}_5min.csv.gz", module.name, date);
+        std::string filename = fmt::format("{}_{}_1min.csv.gz", module.name, date);
         fs::path file_path = base_path / filename;
 
         // 5. 写入GZ文件
@@ -327,13 +462,28 @@ static bool save_factor(
             auto factor_it = factor_data.find(module.name);
             if (factor_it != factor_data.end()) {
                 const GSeries& series = factor_it->second;
-                // 为每个股票填充对应bar的数据
-                for (int i = 0; i < series.get_size(); ++i) {
-                    double value = series.get(i);
-                    if (std::isnan(value)) {
-                        line += ",";  // 无数据（留空）
-                    } else {
-                        line += fmt::format(",{:.6f}", value);  // 有数据
+                
+                // 检查series是否有效
+                if (series.get_size() == 0) {
+                    spdlog::warn("因子[{}]时间桶[{}]数据为空，填充空值", module.name, bar_index);
+                    // 填充空值
+                    for (size_t i = 0; i < stock_list.size(); ++i) {
+                        line += ",";
+                    }
+                } else {
+                    // 为每个股票填充对应bar的数据
+                    for (int i = 0; i < series.get_size() && i < static_cast<int>(stock_list.size()); ++i) {
+                        double value = series.get(i);
+                        if (std::isnan(value)) {
+                            line += ",";  // 无数据（留空）
+                        } else {
+                            line += fmt::format(",{:.6f}", value);  // 有数据
+                        }
+                    }
+                    
+                    // 如果series长度小于股票列表长度，补充空值
+                    for (size_t i = series.get_size(); i < stock_list.size(); ++i) {
+                        line += ",";
                     }
                 }
             } else {
