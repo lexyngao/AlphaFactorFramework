@@ -229,3 +229,63 @@ void AmountIndicator::reset_diff_storage() {
     time_series_amount_cache_.clear();
     spdlog::info("[AmountIndicator] 重置时间序列缓存");
 }
+
+// VolumeIndicator的aggregate方法实现
+bool VolumeIndicator::aggregate(const std::string& target_frequency, std::map<int, std::map<std::string, double>>& aggregated_data) {
+    try {
+        // 如果目标频率与基础频率相同，直接返回
+        if (target_frequency == "15S") {
+            // 从存储中提取数据
+            for (const auto& [stock, holder] : storage_) {
+                if (!holder) continue;
+                
+                GSeries volume_series = holder->get_m_bar("volume");
+                for (int ti = 0; ti < volume_series.get_size(); ++ti) {
+                    double value = volume_series.get(ti);
+                    if (!std::isnan(value)) {
+                        aggregated_data[ti][stock] = value;
+                    }
+                }
+            }
+            return true;
+        }
+        
+        // 对于其他频率，暂时返回false（可以根据需要实现）
+        spdlog::warn("VolumeIndicator::aggregate: 不支持频率 {}", target_frequency);
+        return false;
+        
+    } catch (const std::exception& e) {
+        spdlog::error("VolumeIndicator::aggregate失败: {}", e.what());
+        return false;
+    }
+}
+
+// AmountIndicator的aggregate方法实现
+bool AmountIndicator::aggregate(const std::string& target_frequency, std::map<int, std::map<std::string, double>>& aggregated_data) {
+    try {
+        // 如果目标频率与基础频率相同，直接返回
+        if (target_frequency == "15S") {
+            // 从存储中提取数据
+            for (const auto& [stock, holder] : storage_) {
+                if (!holder) continue;
+                
+                GSeries amount_series = holder->get_m_bar("amount");
+                for (int ti = 0; ti < amount_series.get_size(); ++ti) {
+                    double value = amount_series.get(ti);
+                    if (!std::isnan(value)) {
+                        aggregated_data[ti][stock] = value;
+                    }
+                }
+            }
+            return true;
+        }
+        
+        // 对于其他频率，暂时返回false（可以根据需要实现）
+        spdlog::warn("AmountIndicator::aggregate: 不支持频率 {}", target_frequency);
+        return false;
+        
+    } catch (const std::exception& e) {
+        spdlog::error("AmountIndicator::aggregate失败: {}", e.what());
+        return false;
+    }
+}

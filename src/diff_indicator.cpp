@@ -305,6 +305,79 @@ bool DiffIndicator::save_results(const ModuleConfig& module, const std::string& 
     }
 }
 
+bool DiffIndicator::aggregate(const std::string& target_frequency,std::map<int, std::map<std::string, double>> &aggregated_data){
+    try {
+        // 如果目标频率与基础频率相同，直接调用原始保存方法
+        std::string base_freq = "15S";
+        switch (get_frequency()) {
+            case Frequency::F15S: base_freq = "15S"; break;
+            case Frequency::F1MIN: base_freq = "1min"; break;
+            case Frequency::F5MIN: base_freq = "5min"; break;
+            case Frequency::F30MIN: base_freq = "30min"; break;
+        }
+
+        if (base_freq == target_frequency) {
+            return true;
+        }
+
+        // 获取聚合比率
+        int ratio = get_aggregation_ratio(base_freq, target_frequency);
+        int target_bars = get_target_bars_per_day(target_frequency);
+
+        spdlog::info("开始聚合：{} -> {}，聚合比率: {}，目标桶数: {}", base_freq, target_frequency, ratio, target_bars);
+
+        // Clear output parameter first
+        aggregated_data.clear();
+
+        // 提取股票列表
+        const auto& indicator_storage = get_storage();
+        std::vector<std::string> stock_list;
+        for (const auto& [stock_code, _] : indicator_storage) {
+            stock_list.push_back(stock_code);
+        }
+
+        // 为每个字段分别进行聚合和保存
+        for (const auto& field_config : diff_fields_) {
+            const std::string& output_key = field_config.output_key;
+
+
+            for (const auto& [stock_code, holder_ptr] : indicator_storage) {
+                if (!holder_ptr) continue;
+
+                const BarSeriesHolder* holder = holder_ptr.get();
+                GSeries base_series = holder->get_m_bar(output_key);
+                GSeries output_series(target_bars);
+
+                // 处理上午时段：bucket 0-479 -> 上午桶
+                int morning_base_buckets = 120 * 4;  // 480个15S桶
+                int morning_target_buckets;
+                if (target_frequency == "1min") morning_target_buckets = 120;
+                else if (target_frequency == "5min") morning_target_buckets = 24;
+                else if (target_frequency == "30min") morning_target_buckets = 4;
+
+                aggregate_time_segment(base_series, output_series, 0, morning_base_buckets - 1, ratio, 0);
+
+                // 处理下午时段：bucket 480-947 -> 下午桶
+                int afternoon_base_start = 480;
+                int afternoon_base_end = 947;
+                aggregate_time_segment(base_series, output_series, afternoon_base_start, afternoon_base_end, ratio, morning_target_buckets);
+
+                // 将聚合结果存储到数据结构中
+                for (int ti = 0; ti < target_bars; ++ti) {
+                    double value = output_series.get(ti);
+                    aggregated_data[ti][stock_code] = value;
+                }
+            }
+        }
+
+        return true;
+
+    } catch (const std::exception& e) {
+        spdlog::error("聚合失败：{}", e.what());
+        return false;
+    }
+}
+
 bool DiffIndicator::save_results_with_frequency(const ModuleConfig& module, const std::string& date, const std::string& target_frequency) {
     try {
         // 如果目标频率与基础频率相同，直接调用原始保存方法

@@ -278,6 +278,7 @@ public:
             for (auto &[name, indicator]: indicators_) {
                 try {
                     indicator->try_calculate(sync_tick);
+
                 } catch (const std::exception &e) {
                     spdlog::error("Indicator[{}] 计算失败 for {}: {}", name, sync_tick.symbol, e.what());
                 }

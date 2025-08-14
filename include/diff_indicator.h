@@ -56,6 +56,9 @@ public:
     // 获取存储频率字符串
     const std::string& get_storage_frequency_str() const { return storage_frequency_str_; }
 
+    // 新增：聚合到指定频率
+    bool aggregate(const std::string& target_frequency,std::map<int, std::map<std::string, double>> &aggregated_data) override;
+
 private:
     // 差分字段配置
     std::vector<DiffFieldConfig> diff_fields_;

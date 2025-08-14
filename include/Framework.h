@@ -119,6 +119,7 @@ public:
                     engine_.update(tick_data);
                 }
                 spdlog::info("股票{}行情数据处理完成", stock_code);
+
             });
         }
 

@@ -216,6 +216,7 @@ public:
         if (T_exists) {
             spdlog::info("指标{}T日[{}]指标已存在，直接复用",indicator->name(), T_date);
             indicator->mark_as_calculated();  // 标记为已计算
+            indicator->set_frequency(module.frequency);
         } else {
             spdlog::info("指标{}T日[{}]指标不存在，将在计算阶段生成",indicator->name(), T_date);
         }

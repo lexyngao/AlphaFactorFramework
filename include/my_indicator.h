@@ -23,6 +23,9 @@ public:
 
     // 新增：重置差分存储
     void reset_diff_storage();
+    
+    // 实现纯虚函数aggregate
+    bool aggregate(const std::string& target_frequency, std::map<int, std::map<std::string, double>>& aggregated_data) override;
 
 private:
     // 使用时间序列索引存储累积值：股票 -> 时间戳 -> 累积值
@@ -42,6 +45,9 @@ public:
     
     // 新增：重置差分存储
     void reset_diff_storage();
+    
+    // 实现纯虚函数aggregate
+    bool aggregate(const std::string& target_frequency, std::map<int, std::map<std::string, double>>& aggregated_data) override;
 
 private:
     // 使用时间序列索引存储累积值：股票 -> 时间戳 -> 累积值

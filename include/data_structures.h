@@ -1242,6 +1242,22 @@ public:
     void set_storage_frequency( const std::string& storage_frequency_str_name){
         storage_frequency_str_ = storage_frequency_str_name;
     }
+
+    void set_frequency( const std::string& freq_str){
+        if (freq_str == "15S" || freq_str == "15s")
+            frequency_ = Frequency::F15S;
+        else if (freq_str == "1min")
+            frequency_ = Frequency::F1MIN;
+        if (freq_str == "5min")
+            frequency_ =  Frequency::F5MIN;
+        if (freq_str == "30min")
+            frequency_ = Frequency::F30MIN;
+        return; // 默认不修改
+
+    }
+
+    // 纯虚函数：计算指标（由子类实现具体逻辑）
+    virtual bool aggregate(const std::string& target_frequency,std::map<int, std::map<std::string, double>> &aggregated_data) = 0;
 };
 
 // 因子类：依赖Indicator结果计算，结果存储在factor_storage

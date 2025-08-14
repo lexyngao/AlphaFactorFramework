@@ -271,11 +271,24 @@ GSeries PriceFactor::definition(
 }
 
 
-// PriceFactor的访问器模式实现
-GSeries PriceFactor::definition_with_accessor(
+ 
+
+// 重写基类的definition_with_timestamp方法（保持参数一致）
+GSeries PriceFactor::definition_with_timestamp(
     std::function<std::shared_ptr<Indicator>(const std::string&)> get_indicator,
     const std::vector<std::string>& sorted_stock_list,
-    int ti
+    uint64_t timestamp
+) {
+    Frequency factor_frenquency = get_frequency();
+    return definition_with_timestamp_frequency(get_indicator, sorted_stock_list, timestamp, factor_frenquency);
+}
+
+// 新增：支持动态频率的扩展方法
+GSeries PriceFactor::definition_with_timestamp_frequency(
+    std::function<std::shared_ptr<Indicator>(const std::string&)> get_indicator,
+    const std::vector<std::string>& sorted_stock_list,
+    uint64_t timestamp,
+    Frequency& target_frequency
 ) {
     GSeries result;
     
@@ -287,70 +300,145 @@ GSeries PriceFactor::definition_with_accessor(
         return result;
     }
     
-    // 获取DiffIndicator的频率
-    Frequency diff_freq = diff_indicator->get_frequency();
+    // 获取DiffIndicator的存储频率
+    Frequency storage_freq = diff_indicator->get_frequency();
+
     
-    // 使用通用的频率匹配函数计算时间桶映射范围
-    // Factor和Indicator都是1min频率，所以映射是1:1
-    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, diff_freq, get_frequency());
-    
-    spdlog::debug("PriceFactor计算: ti={}, 映射到{}频率范围: [{}, {}]", 
-                  ti, static_cast<int>(diff_freq), start_indicator_index, end_indicator_index);
-    
-    // 初始化结果序列
+    // 如果目标频率与存储频率相同，直接使用原有逻辑
+    if (storage_freq == target_frequency) {
+        return definition_with_timestamp_original(get_indicator, sorted_stock_list, timestamp);
+    }
+
+    std::string target_frequency_str = frequency_to_string(target_frequency);
+
+    // 需要频率转换：动态聚合读取
+    return definition_with_timestamp_aggregated(get_indicator, sorted_stock_list, timestamp, target_frequency_str);
+}
+
+// 新增：处理需要频率转换的情况
+GSeries PriceFactor::definition_with_timestamp_aggregated(
+    std::function<std::shared_ptr<Indicator>(const std::string&)> get_indicator,
+    const std::vector<std::string>& sorted_stock_list,
+    uint64_t timestamp,
+    const std::string& target_frequency
+) {
+    GSeries result;
     result.resize(sorted_stock_list.size());
+    
+    auto diff_indicator = get_indicator("diff_volume_amount");
+    const auto& diff_storage = diff_indicator->get_storage();
+    
+    // 获取聚合参数（使用静态函数）
+    int ratio = get_aggregation_ratio("15S", target_frequency);
+    int target_bars = get_target_bars_per_day(target_frequency);
+    
+    // 计算目标频率下的时间索引（转换为Frequency枚举）
+    Frequency target_freq_enum = string_to_frequency(target_frequency);
+    auto [start_indicator_index, end_indicator_index] = get_available_data_range_from_timestamp(timestamp, target_freq_enum);
+    
+    if (start_indicator_index < 0 || end_indicator_index < 0) {
+        spdlog::warn("时间戳{}在{}频率下不在交易时间内", timestamp, target_frequency);
+        return result;
+    }
+    
+    spdlog::debug("动态频率转换: {} -> {}, 目标索引: {}", "15S", target_frequency, end_indicator_index);
     
     for (size_t i = 0; i < sorted_stock_list.size(); ++i) {
         const std::string& stock = sorted_stock_list[i];
         double value = NAN;
         
-        // 从DiffIndicator的存储中获取数据
-        const auto& diff_storage = diff_indicator->get_storage();
-        
         auto stock_it = diff_storage.find(stock);
-        
         if (stock_it != diff_storage.end() && stock_it->second) {
             BarSeriesHolder* diff_holder = stock_it->second.get();
             
-            // 计算VWAP：使用当前时间桶内最后一个有效数据点的amount/volume
-            // 由于amount和volume都是差分形式，VWAP = amount / volume
-            double vwap_value = NAN;
-            
-            for (int j = start_indicator_index; j <= end_indicator_index; ++j) {
-                if (j >= 0 && j < diff_holder->get_m_bar("amount").get_size() && 
-                    j < diff_holder->get_m_bar("volume").get_size()) {
-                    
-                    // 从同一个holder的不同output_key读取amount和volume
-                    double amount_value = diff_holder->get_m_bar("amount").get(j);
-                    double volume_value = diff_holder->get_m_bar("volume").get(j);
-                    
-                    if (!std::isnan(amount_value) && !std::isnan(volume_value) && volume_value > 0) {
-                        vwap_value = amount_value / volume_value;  // 计算当前时间点的VWAP
-                        spdlog::debug("股票{}: 时间点{} VWAP={}, amount={}, volume={}", stock, j, vwap_value, amount_value, volume_value);
-                    }
-                }
-            }
-            
-            // 使用最后一个有效的VWAP值
-            if (!std::isnan(vwap_value)) {
-                value = vwap_value;
-                spdlog::debug("股票{}: 使用VWAP值 value={}", stock, value);
-            } else {
-                spdlog::debug("股票{}: 没有有效的VWAP数据", stock);
-            }
-        } else {
-            spdlog::debug("股票{}: 找不到DiffIndicator的BarSeriesHolder", stock);
+            // 动态聚合计算VWAP
+            value = calculate_aggregated_vwap(diff_holder, end_indicator_index, ratio, target_frequency);
         }
         
         result.set(i, value);
     }
     
-    spdlog::debug("PriceFactor计算完成: 有效数据 {}/{}", result.get_valid_num(), result.get_size());
     return result;
-} 
+}
 
-// 新增：PriceFactor的时间戳驱动实现
-GSeries PriceFactor::definition_with_timestamp(
+// 新增：聚合+计算聚合后的VWAP
+double PriceFactor::calculate_aggregated_vwap(
+    BarSeriesHolder* diff_holder, 
+    int target_index, 
+    int ratio, 
+    const std::string& target_frequency
+) {
+    // 计算基础15s数据的起始和结束索引
+    int base_start = target_index * ratio;
+    int base_end = std::min(base_start + ratio - 1, 947); // 避免超出范围
+    
+    // 聚合amount和volume
+    double aggregated_amount = 0.0;
+    double aggregated_volume = 0.0;
+    int valid_count = 0;
+    
+    for (int i = base_start; i <= base_end; ++i) {
+        if (i >= diff_holder->get_m_bar("amount").get_size() || 
+            i >= diff_holder->get_m_bar("volume").get_size()) {
+            continue;
+        }
+        
+        double amount = diff_holder->get_m_bar("amount").get(i);
+        double volume = diff_holder->get_m_bar("volume").get(i);
+        
+        if (!std::isnan(amount) && !std::isnan(volume) && volume > 0) {
+            aggregated_amount += amount;
+            aggregated_volume += volume;
+            valid_count++;
+        }
+    }
+    
+    if (valid_count > 0 && aggregated_volume > 0) {
+        return aggregated_amount / aggregated_volume;
+    }
+    
+    return NAN;
+}
+
+// 新增：静态聚合工具函数
+int PriceFactor::get_aggregation_ratio(const std::string& from_freq, const std::string& to_freq) {
+    if (from_freq == "15S" && to_freq == "1min") return 4;
+    if (from_freq == "15S" && to_freq == "5min") return 20;
+    if (from_freq == "15S" && to_freq == "30min") return 120;
+    if (from_freq == "1min" && to_freq == "5min") return 5;
+    if (from_freq == "1min" && to_freq == "30min") return 30;
+    if (from_freq == "5min" && to_freq == "30min") return 6;
+    return 1;
+}
+
+int PriceFactor::get_target_bars_per_day(const std::string& frequency) {
+    if (frequency == "15S") return 948;
+    if (frequency == "1min") return 237;
+    if (frequency == "5min") return 48;
+    if (frequency == "30min") return 8;
+    return 237;  // 默认1min
+}
+
+// 新增：字符串频率转换为Frequency枚举
+Frequency PriceFactor::string_to_frequency(const std::string& freq_str) {
+    if (freq_str == "15S" || freq_str == "15s") return Frequency::F15S;
+    if (freq_str == "1min") return Frequency::F1MIN;
+    if (freq_str == "5min") return Frequency::F5MIN;
+    if (freq_str == "30min") return Frequency::F30MIN;
+    return Frequency::F15S; // 默认
+}
+
+// 新增：为Frequency枚举转换为字符串
+std::string PriceFactor::frequency_to_string(Frequency& frequency) {
+    if (frequency == Frequency::F15S) return "15S";
+    if (frequency == Frequency::F1MIN) return "1min";
+    if (frequency == Frequency::F5MIN) return "5min";
+    if (frequency == Frequency::F30MIN) return "30min";
+    return "15S"; // 默认
+}
+
+// 原有的方法（重命名，保持原有逻辑）
+GSeries PriceFactor::definition_with_timestamp_original(
     std::function<std::shared_ptr<Indicator>(const std::string&)> get_indicator,
     const std::vector<std::string>& sorted_stock_list,
     uint64_t timestamp
@@ -383,7 +471,6 @@ GSeries PriceFactor::definition_with_timestamp(
     
     // 使用新的时间戳驱动函数计算可用的数据范围
     auto [start_indicator_index, end_indicator_index] = get_available_data_range_from_timestamp(timestamp, storage_freq);
-
 
     if (start_indicator_index < 0 || end_indicator_index < 0) {
         spdlog::warn("时间戳{}不在交易时间内", timestamp);
