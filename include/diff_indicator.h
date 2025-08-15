@@ -1,5 +1,6 @@
 #pragma once
 #include "data_structures.h"
+#include "indicator_storage_helper.h"
 #include <unordered_map>
 #include <memory>
 #include <mutex>
@@ -20,16 +21,29 @@ public:
     };
 
     explicit DiffIndicator(const ModuleConfig& module) : Indicator(module) {
-        // 强制设置内部计算频率为15S，但保持配置的存储频率
-        storage_frequency_str_ = module.frequency;  // 保存配置的存储频率
+        // 保存配置的存储频率
+        storage_frequency_str_ = module.frequency;
         
-        // 重新设置为15S进行内部计算
-        ModuleConfig internal_config = module;
-        internal_config.frequency = "15S";
+        // 根据配置的频率设置内部计算频率，保持与存储频率一致
+        if (module.frequency == "15S" || module.frequency == "15s") {
+            frequency_ = Frequency::F15S;
+        } else if (module.frequency == "1min") {
+            frequency_ = Frequency::F1MIN;
+        } else if (module.frequency == "5min") {
+            frequency_ = Frequency::F5MIN;
+        } else if (module.frequency == "30min") {
+            frequency_ = Frequency::F30MIN;
+        } else {
+            // 默认使用15S
+            frequency_ = Frequency::F15S;
+            spdlog::warn("DiffIndicator[{}] 未知频率配置: {}，使用默认15S", module.name, module.frequency);
+        }
         
-        // 重新初始化频率参数为15S
-        frequency_ = Frequency::F15S;
+        // 重新初始化频率参数
         init_frequency_params();
+        
+        spdlog::info("DiffIndicator[{}] 初始化完成: 存储频率={}, 内部频率={}", 
+                     module.name, module.frequency, static_cast<int>(frequency_));
         
         // 默认配置volume和amount差分
         setup_default_fields();

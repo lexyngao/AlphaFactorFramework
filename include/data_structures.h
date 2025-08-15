@@ -22,6 +22,7 @@
 #include <limits>
 #include <atomic>
 
+// 前向声明 - 移除，因为不再需要
 
 // 存储计算结果的序列（PDF 1.3节）
 class GSeries {
@@ -1422,66 +1423,8 @@ inline std::pair<int, int> get_time_bucket_range(int factor_ti, Frequency indica
     }
 }
 
-// 新增：基于时间戳计算可用的数据范围（时间戳驱动）
-inline std::pair<int, int> get_available_data_range_from_timestamp(
-    uint64_t timestamp, 
-    Frequency indicator_freq
-) {
-    if (timestamp == 0) return {-1, -1};
-
-    // 复用你已有的时间桶计算逻辑
-    // 1. 转换为北京时间
-    int64_t utc_sec = timestamp / 1000000000;
-    int64_t beijing_sec = utc_sec + 8 * 3600;  // UTC + 8小时 = 北京时间
-    int64_t beijing_seconds_in_day = beijing_sec % 86400;
-    int hour = static_cast<int>(beijing_seconds_in_day / 3600);
-    int minute = static_cast<int>((beijing_seconds_in_day % 3600) / 60);
-    int second = static_cast<int>(beijing_seconds_in_day % 60);
-    int total_minutes = hour * 60 + minute;
-
-    // 交易时间定义（与你已有的逻辑保持一致）
-    const int time_900 = 9 * 60 + 0;    // 9:00
-    const int time_930 = 9 * 60 + 30;   // 9:30
-    const int time_1130 = 11 * 60 + 30; // 11:30
-    const int time_1300 = 13 * 60 + 0;  // 13:00
-    const int time_1457 = 14 * 60 + 57; // 14:57
-
-    // 检查是否在交易时间内
-    if (total_minutes < time_900 || total_minutes >= time_1457) {
-        return {-1, -1};  // 非交易时间
-    }
-
-    // 计算从开盘到当前时间的秒数
-    int seconds_since_open = 0;
-    if (total_minutes >= time_900 && total_minutes < time_930) {
-        // 9:00:00-9:30:00 映射到 9:30 桶 (bucket=0)
-        seconds_since_open = 0;
-    } else if (total_minutes >= time_930 && total_minutes < time_1130) {
-        // 9:30:00-11:30:00 正常映射
-        seconds_since_open = (total_minutes - time_930) * 60 + second;
-    } else if (total_minutes >= time_1130 && total_minutes < time_1300) {
-        // 11:30:00-13:00:00 映射到 13:00 桶
-        seconds_since_open = (time_1130 - time_930) * 60;  // 上午总秒数
-    } else if (total_minutes >= time_1300 && total_minutes < time_1457) {
-        // 13:00:00-14:57:00 正常映射
-        seconds_since_open = (time_1130 - time_930) * 60 + (total_minutes - time_1300) * 60 + second;
-    }
-
-    // 根据indicator频率计算可用的时间桶数量
-    int indicator_seconds = 0;
-    switch (indicator_freq) {
-        case Frequency::F15S: indicator_seconds = 15; break;
-        case Frequency::F1MIN: indicator_seconds = 60; break;
-        case Frequency::F5MIN: indicator_seconds = 300; break;
-        case Frequency::F30MIN: indicator_seconds = 1800; break;
-    }
-    
-    // 计算可用的时间桶范围（从0到当前时间）
-    int available_buckets = seconds_since_open / indicator_seconds;
-    int start_index = 0;
-    int end_index = std::max(0, available_buckets);
-    
-    return {start_index, end_index};
-}
+// 基于时间戳计算可用的数据范围（时间戳驱动）
+// 现在直接使用 IndicatorStorageHelper::get_available_data_range_from_timestamp()
+// 此函数已移除，所有调用都直接使用 IndicatorStorageHelper
 
 #endif //ALPHAFACTORFRAMEWORK_DATA_STRUCTURES_H

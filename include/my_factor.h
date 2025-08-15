@@ -1,5 +1,6 @@
 #pragma once
 #include "data_structures.h"
+#include "indicator_storage_helper.h"
 #include <unordered_map>
 #include <vector>
 #include <string>

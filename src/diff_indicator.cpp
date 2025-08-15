@@ -47,24 +47,12 @@ void DiffIndicator::Calculate(const SyncTickData& tick_data) {
 
     spdlog::info("[DiffCalculate-Enter] symbol={} thread_id={}", tick_data.symbol, thread_id_str);
 
+    // 检查存储空间是否存在
     auto it = storage_.find(tick_data.symbol);
     if (it == storage_.end()) {
         spdlog::warn("[DiffCalculate] symbol={} not found in storage_ (thread_id={})", tick_data.symbol, thread_id_str);
         return;
     }
-    BarSeriesHolder* holder = it->second.get();
-
-    int ti = get_time_bucket_index(tick_data.tick_data.real_time);
-    spdlog::debug("[DiffCalculate] symbol={} real_time={} ti={} (thread_id={})", 
-                 tick_data.symbol, tick_data.tick_data.real_time, ti, thread_id_str);
-    
-    if (ti < 0) {
-        spdlog::debug("[DiffCalculate] symbol={} invalid ti (thread_id={}) real_time={}", 
-                     tick_data.symbol, thread_id_str, tick_data.tick_data.real_time);
-        return;
-    }
-    
-    int bar_index = ti;
 
     // 为每个配置的字段计算差分
     for (const auto& field_config : diff_fields_) {
@@ -78,35 +66,18 @@ void DiffIndicator::Calculate(const SyncTickData& tick_data) {
         double field_diff = calculate_field_diff(field_name, tick_data.symbol, 
                                                tick_data.tick_data.real_time, current_value);
         
-        // 获取或创建GSeries
-        GSeries series = holder->get_m_bar(output_key);
-        if (series.empty()) {
-            series = GSeries();
-            series.resize(get_bars_per_day());
-            spdlog::debug("[DiffCalculate] symbol={} new {} GSeries allocated (thread_id={})", 
-                         tick_data.symbol, output_key, thread_id_str);
-        }
+        // 使用 IndicatorStorageHelper 存储数据
+        // 这样就不需要手动计算时间桶索引和手动操作存储了
+        IndicatorStorageHelper::store_value(
+            this,                           // Indicator 实例
+            tick_data.symbol,               // 股票代码
+            output_key,                     // 输出键名（如 "volume_diff", "amount_diff"）
+            field_diff,                     // 差分值
+            tick_data.tick_data.real_time  // 时间戳
+        );
         
-        // 在时间桶内累加差分值
-        double existing_value = series.get(bar_index);
-        if (!std::isnan(existing_value)) {
-            field_diff += existing_value;
-            spdlog::debug("[DiffCalculate] symbol={} accumulated {}: {} + {} = {}", 
-                         tick_data.symbol, output_key, existing_value, field_diff - existing_value, field_diff);
-        } else {
-            spdlog::debug("[DiffCalculate] symbol={} first valid {} in bucket: {}", 
-                         tick_data.symbol, output_key, field_diff);
-        }
-        
-        // 保存结果
-        series.set(bar_index, field_diff);
-        holder->offline_set_m_bar(output_key, series);
-        
-        spdlog::debug("[DiffCalculate] symbol={} ti={} bar_index={} {}_diff={} (thread_id={})", 
-                     tick_data.symbol, ti, bar_index, output_key, field_diff, thread_id_str);
-        
-        // 输出时间桶信息
-        log_time_bucket_info(tick_data.symbol, bar_index, field_diff);
+        spdlog::debug("[DiffCalculate] symbol={} {}_diff={} 已通过 IndicatorStorageHelper 存储 (thread_id={})", 
+                     tick_data.symbol, output_key, field_diff, thread_id_str);
     }
 }
 
@@ -173,11 +144,11 @@ bool DiffIndicator::save_results(const ModuleConfig& module, const std::string& 
             return false;
         }
 
-        // 2. 检查是否需要聚合（内部15S -> 配置频率）
-        if (storage_frequency_str_ != "15S") {
-            spdlog::info("DiffIndicator内部15S数据聚合到{}频率进行存储", storage_frequency_str_);
-            return save_results_with_frequency(module, date, storage_frequency_str_);
-        }
+//        // 2. 检查是否需要聚合（内部15S -> 配置频率）
+//        if (storage_frequency_str_ != "15S") {
+//            spdlog::info("DiffIndicator内部15S数据聚合到{}频率进行存储", storage_frequency_str_);
+//            return save_results_with_frequency(module, date, storage_frequency_str_);
+//        }
 
         // 3. 如果配置就是15S，直接保存原始数据
         spdlog::info("DiffIndicator保存数据");

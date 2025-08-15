@@ -148,8 +148,8 @@ GSeries VolumeFactor::definition_with_timestamp(
     Frequency indicator_freq = volume_indicator->frequency();
     spdlog::debug("volume indicator频率: {}, 时间戳: {}", static_cast<int>(indicator_freq), timestamp);
     
-    // 使用新的时间戳驱动函数计算可用的数据范围
-    auto [start_indicator_index, end_indicator_index] = get_available_data_range_from_timestamp(timestamp, indicator_freq);
+    // 使用 IndicatorStorageHelper 计算可用的数据范围
+    auto [start_indicator_index, end_indicator_index] = IndicatorStorageHelper::get_available_data_range_from_timestamp(timestamp, indicator_freq);
     
     if (start_indicator_index < 0 || end_indicator_index < 0) {
         spdlog::warn("时间戳{}不在交易时间内", timestamp);
@@ -301,18 +301,18 @@ GSeries PriceFactor::definition_with_timestamp_frequency(
     }
     
     // 获取DiffIndicator的存储频率
-    Frequency storage_freq = diff_indicator->get_frequency();
+//    Frequency storage_freq = diff_indicator->get_frequency();
 
     
     // 如果目标频率与存储频率相同，直接使用原有逻辑
-    if (storage_freq == target_frequency) {
+//    if (storage_freq == target_frequency) {
         return definition_with_timestamp_original(get_indicator, sorted_stock_list, timestamp);
-    }
+//    }
 
-    std::string target_frequency_str = frequency_to_string(target_frequency);
+//    std::string target_frequency_str = frequency_to_string(target_frequency);
 
     // 需要频率转换：动态聚合读取
-    return definition_with_timestamp_aggregated(get_indicator, sorted_stock_list, timestamp, target_frequency_str);
+//    return definition_with_timestamp_aggregated(get_indicator, sorted_stock_list, timestamp, target_frequency_str);
 }
 
 // 新增：处理需要频率转换的情况
@@ -334,7 +334,7 @@ GSeries PriceFactor::definition_with_timestamp_aggregated(
     
     // 计算目标频率下的时间索引（转换为Frequency枚举）
     Frequency target_freq_enum = string_to_frequency(target_frequency);
-    auto [start_indicator_index, end_indicator_index] = get_available_data_range_from_timestamp(timestamp, target_freq_enum);
+    auto [start_indicator_index, end_indicator_index] = IndicatorStorageHelper::get_available_data_range_from_timestamp(timestamp, target_freq_enum);
     
     if (start_indicator_index < 0 || end_indicator_index < 0) {
         spdlog::warn("时间戳{}在{}频率下不在交易时间内", timestamp, target_frequency);
@@ -469,8 +469,8 @@ GSeries PriceFactor::definition_with_timestamp_original(
         storage_freq = Frequency::F30MIN;
     }
     
-    // 使用新的时间戳驱动函数计算可用的数据范围
-    auto [start_indicator_index, end_indicator_index] = get_available_data_range_from_timestamp(timestamp, storage_freq);
+    // 使用 IndicatorStorageHelper 计算可用的数据范围
+    auto [start_indicator_index, end_indicator_index] = IndicatorStorageHelper::get_available_data_range_from_timestamp(timestamp, storage_freq);
 
     if (start_indicator_index < 0 || end_indicator_index < 0) {
         spdlog::warn("时间戳{}不在交易时间内", timestamp);

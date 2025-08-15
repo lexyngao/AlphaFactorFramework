@@ -22,7 +22,8 @@ add_executable(AlphaFactorFramework main.cpp
         src/my_indicator.cpp
         src/my_factor.cpp
         src/diff_indicator.cpp
-        src/gseries_impl.cpp)
+        src/gseries_impl.cpp
+        src/indicator_storage_helper.cpp)
 
 # 链接库
 #target_link_libraries(AlphaFactorFramework PRIVATE tinyxml2 ZLIB::ZLIB spdlog::spdlog)
