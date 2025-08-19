@@ -227,33 +227,91 @@ public:
             std::string hist_date = get_prev_date(T_date, i);
             spdlog::info("开始加载历史日期[{}]的指标数据", hist_date);
             std::vector<std::string> hist_stock_list = load_stock_list(universe, hist_date);
-            std::unordered_map<std::string, GSeries> hist_raw_data;
-            if (!load_historical_indicator_data(indicator, module, hist_date, hist_raw_data)) {
-                spdlog::warn("历史日期[{}]指标数据不存在，跳过", hist_date);
-                continue;
-            }
-            // 步骤4：重索引并存储到indicator->get_storage()
-            for (const auto& stock : T_stock_list) {
-                GSeries series;
-                if (hist_raw_data.count(stock)) {
-                    series = hist_raw_data.at(stock);
-                } else {
-                    // 不存在的股票用NAN填充
-                    int bar_count = 0;
-                    if (!hist_stock_list.empty() && hist_raw_data.count(hist_stock_list[0])) {
-                        bar_count = hist_raw_data.at(hist_stock_list[0]).get_size();
+            
+            // 检查是否为多元素指标
+            fs::path base_path = fs::path(module.path) / hist_date / module.frequency;
+            std::string pattern = fmt::format("{}_*_{}_{}.csv.gz", 
+                                             module.name, hist_date, module.frequency);
+            std::vector<fs::path> files = scan_indicator_files(base_path, pattern);
+            
+            if (!files.empty()) {
+                // 多元素指标：直接处理并存储
+                spdlog::info("历史日期[{}]发现多元素指标文件，共{}个", hist_date, files.size());
+                
+                // 收集所有output_key的数据
+                std::unordered_map<std::string, std::unordered_map<std::string, GSeries>> stock_output_data;
+                
+                for (const auto& file_path : files) {
+                    std::string filename = file_path.filename().string();
+                    
+                    // 解析文件名格式：{module.name}_{output_key}_{date}_{frequency}.csv.gz
+                    std::string prefix = fmt::format("{}_", module.name);
+                    std::string suffix = fmt::format("_{}_{}.csv.gz", hist_date, module.frequency);
+                    
+                    if (filename.size() <= prefix.size() + suffix.size()) {
+                        spdlog::warn("历史文件名格式错误：{}", filename);
+                        continue;
                     }
-                    for (int k = 0; k < bar_count; ++k) {
-                        series.push(NAN);
+                    
+                    std::string output_key = filename.substr(
+                        prefix.size(), 
+                        filename.size() - prefix.size() - suffix.size()
+                    );
+                    
+                    spdlog::info("加载历史多元素指标：{} -> output_key: {}", filename, output_key);
+                    
+                    // 解析文件到stock->GSeries
+                    std::unordered_map<std::string, GSeries> stock_series;
+                    if (!parse_indicator_gz_to_map(file_path, module.name, hist_date, hist_stock_list, stock_series)) {
+                        spdlog::error("解析历史日期[{}]指标文件失败：{}", hist_date, filename);
+                        continue;
+                    }
+                    
+                    // 将每个output_key的数据存储到对应的股票下
+                    for (const auto& [stock, series] : stock_series) {
+                        stock_output_data[stock][output_key] = series;
                     }
                 }
-                auto holder_it = indicator->get_storage().find(stock);
-                if (holder_it != indicator->get_storage().end() && holder_it->second) {
-                    // 新的索引逻辑：i=1表示往前1日，i=2表示往前2日，...，i=pre_days表示往前pre_days日
-                    holder_it->second->set_his_series(module.name, i, series);
+                
+                // 将多元素历史数据直接存储到indicator的存储结构中
+                if (!stock_output_data.empty()) {
+                    store_multiple_historical_indicator_data(indicator, hist_date, i, stock_output_data);
+                    spdlog::info("历史日期[{}]多元素指标数据存储完成", hist_date);
                 }
+                
+            } else {
+                // 单元素指标：使用原有的逻辑
+                std::unordered_map<std::string, GSeries> hist_raw_data;
+                if (!load_historical_indicator_data(indicator, module, hist_date, hist_raw_data)) {
+                    spdlog::warn("历史日期[{}]指标数据不存在，跳过", hist_date);
+                    continue;
+                }
+                
+                // 步骤4：重索引并存储到indicator->get_storage()
+                for (const auto& stock : T_stock_list) {
+                    GSeries series;
+                    if (hist_raw_data.count(stock)) {
+                        series = hist_raw_data.at(stock);
+                    } else {
+                        // 不存在的股票用NAN填充
+                        int bar_count = 0;
+                        if (!hist_stock_list.empty() && hist_raw_data.count(hist_stock_list[0])) {
+                            bar_count = hist_raw_data.at(hist_stock_list[0]).get_size();
+                        }
+                        for (int k = 0; k < bar_count; ++k) {
+                            series.push(NAN);
+                        }
+                    }
+                    auto holder_it = indicator->get_storage().find(stock);
+                    if (holder_it != indicator->get_storage().end() && holder_it->second) {
+                        // 修改：使用统一的output_key格式存储历史数据
+                        // 对于单元素指标，使用module.name作为output_key
+                        std::string output_key = module.name;  // 默认使用module.name
+                        holder_it->second->set_his_series(output_key, i, series);
+                    }
+                }
+                spdlog::info("历史日期[{}]单元素指标重索引完成", hist_date);
             }
-            spdlog::info("历史日期[{}]指标重索引完成", hist_date);
         }
         return true;
     }
@@ -518,14 +576,101 @@ private:
             const std::string& hist_date,
             std::unordered_map<std::string, GSeries>& out_raw_data
     ) {
-        fs::path file_path = fs::path(module.path) / hist_date / module.frequency /
-                             fmt::format("{}_{}_{}.csv.gz", module.name, hist_date, module.frequency);
-        if (!fs::exists(file_path)) {
+        // 首先尝试多元素模式（主流情况）：扫描多个output_key文件
+        fs::path base_path = fs::path(module.path) / hist_date / module.frequency;
+        std::string pattern = fmt::format("{}_*_{}_{}.csv.gz", 
+                                         module.name, hist_date, module.frequency);
+        std::vector<fs::path> files = scan_indicator_files(base_path, pattern);
+        
+        if (!files.empty()) {
+            spdlog::info("历史日期[{}]发现多元素指标文件，共{}个", hist_date, files.size());
+            // 对于多元素模式，我们需要先收集所有output_key的数据
+            std::unordered_map<std::string, std::unordered_map<std::string, GSeries>> stock_output_data;
+            
+            for (const auto& file_path : files) {
+                std::string filename = file_path.filename().string();
+                
+                // 解析文件名格式：{module.name}_{output_key}_{date}_{frequency}.csv.gz
+                std::string prefix = fmt::format("{}_", module.name);
+                std::string suffix = fmt::format("_{}_{}.csv.gz", hist_date, module.frequency);
+                
+                if (filename.size() <= prefix.size() + suffix.size()) {
+                    spdlog::warn("历史文件名格式错误：{}", filename);
+                    continue;
+                }
+                
+                std::string output_key = filename.substr(
+                    prefix.size(), 
+                    filename.size() - prefix.size() - suffix.size()
+                );
+                
+                spdlog::info("加载历史多元素指标：{} -> output_key: {}", filename, output_key);
+                
+                // 解析文件到stock->GSeries
+                std::unordered_map<std::string, GSeries> stock_series;
+                if (!parse_indicator_gz_to_map(file_path, module.name, hist_date, std::vector<std::string>{}, stock_series)) {
+                    spdlog::error("解析历史日期[{}]指标文件失败：{}", hist_date, filename);
+                    continue;
+                }
+                
+                // 将每个output_key的数据存储到对应的股票下
+                for (const auto& [stock, series] : stock_series) {
+                    stock_output_data[stock][output_key] = series;
+                }
+            }
+            
+            // 将多元素数据转换为单元素格式（保持向后兼容）
+            if (!stock_output_data.empty()) {
+                // 获取所有股票代码
+                std::vector<std::string> all_stocks;
+                for (const auto& [stock, _] : stock_output_data) {
+                    all_stocks.push_back(stock);
+                }
+                
+                // 获取所有output_key
+                std::vector<std::string> all_output_keys;
+                if (!all_stocks.empty() && !stock_output_data[all_stocks[0]].empty()) {
+                    for (const auto& [output_key, _] : stock_output_data[all_stocks[0]]) {
+                        all_output_keys.push_back(output_key);
+                    }
+                }
+                
+                // 选择第一个output_key作为主要数据（保持向后兼容）
+                if (!all_output_keys.empty()) {
+                    std::string primary_key = all_output_keys[0];
+                    spdlog::info("历史多元素指标选择主要key: {} 作为输出", primary_key);
+                    
+                    for (const auto& [stock, output_map] : stock_output_data) {
+                        if (output_map.count(primary_key)) {
+                            out_raw_data[stock] = output_map.at(primary_key);
+                        }
+                    }
+                    
+                    // 重要：将多元素历史数据直接存储到indicator的存储结构中
+                    // 这样Factor就可以通过get_today_min_series访问到完整的历史数据
+                    // 注意：这里我们需要知道his_day_index，但在这个函数中我们不知道
+                    // 所以我们需要在调用这个函数的地方处理his_day_index
+                    // 暂时先存储到out_raw_data中，由上层调用者处理
+                    spdlog::debug("历史多元素指标[{}]为每只股票准备了{}个output_key的数据", 
+                                 hist_date, all_output_keys.size());
+                    
+                    return true;
+                }
+            }
+            
+            return false;
+        }
+        
+        // 回退到单元素模式（兼容现有情况）
+        spdlog::info("历史日期[{}]未发现多元素文件，尝试单元素模式", hist_date);
+        fs::path single_file = base_path / fmt::format("{}_{}_{}.csv.gz", 
+                                                       module.name, hist_date, module.frequency);
+        if (!fs::exists(single_file)) {
             return false;
         }
 
         // 解析GZ文件为原始数据（股票->GSeries）
-        gzFile gz_file = gzopen(file_path.string().c_str(), "rb");
+        gzFile gz_file = gzopen(single_file.string().c_str(), "rb");
         if (!gz_file) return false;
 
         // 读取表头（bar_index + 股票代码）
@@ -565,6 +710,130 @@ private:
         }
 
         return true;
+    }
+
+    // 新增：加载多个历史指标文件（多元素模式）
+    static bool load_multiple_historical_indicator_files(
+            const std::shared_ptr<Indicator>& indicator,
+            const ModuleConfig& module,
+            const std::string& hist_date,
+            const std::vector<fs::path>& files,
+            std::unordered_map<std::string, GSeries>& out_raw_data
+    ) {
+        // 用于存储每个股票的所有output_key数据
+        std::unordered_map<std::string, std::unordered_map<std::string, GSeries>> stock_output_data;
+        
+        for (const auto& file_path : files) {
+            std::string filename = file_path.filename().string();
+            
+            // 解析文件名格式：{module.name}_{output_key}_{date}_{frequency}.csv.gz
+            // 例如：DiffIndicator_volume_20240701_1min.csv.gz
+            std::string prefix = fmt::format("{}_", module.name);
+            std::string suffix = fmt::format("_{}_{}.csv.gz", hist_date, module.frequency);
+            
+            if (filename.size() <= prefix.size() + suffix.size()) {
+                spdlog::warn("历史文件名格式错误：{}", filename);
+                continue;
+            }
+            
+            std::string output_key = filename.substr(
+                prefix.size(), 
+                filename.size() - prefix.size() - suffix.size()
+            );
+            
+            spdlog::info("加载历史多元素指标：{} -> output_key: {}", filename, output_key);
+            
+            // 解析文件到stock->GSeries
+            std::unordered_map<std::string, GSeries> stock_series;
+            if (!parse_indicator_gz_to_map(file_path, module.name, hist_date, std::vector<std::string>{}, stock_series)) {
+                spdlog::error("解析历史日期[{}]指标文件失败：{}", hist_date, filename);
+                continue;
+            }
+            
+            // 将每个output_key的数据存储到对应的股票下
+            for (const auto& [stock, series] : stock_series) {
+                stock_output_data[stock][output_key] = series;
+            }
+        }
+        
+        // 将多元素数据转换为单元素格式（保持向后兼容）
+        // 这里我们选择第一个output_key作为主要数据，或者合并所有数据
+        if (!stock_output_data.empty()) {
+            // 获取所有股票代码
+            std::vector<std::string> all_stocks;
+            for (const auto& [stock, _] : stock_output_data) {
+                all_stocks.push_back(stock);
+            }
+            
+            // 获取所有output_key
+            std::vector<std::string> all_output_keys;
+            if (!all_stocks.empty() && !stock_output_data[all_stocks[0]].empty()) {
+                for (const auto& [output_key, _] : stock_output_data[all_stocks[0]]) {
+                    all_output_keys.push_back(output_key);
+                }
+            }
+            
+            // 选择第一个output_key作为主要数据（或者可以根据需要实现更复杂的合并逻辑）
+            if (!all_output_keys.empty()) {
+                std::string primary_key = all_output_keys[0];
+                spdlog::info("历史多元素指标选择主要key: {} 作为输出", primary_key);
+                
+                for (const auto& [stock, output_map] : stock_output_data) {
+                    if (output_map.count(primary_key)) {
+                        out_raw_data[stock] = output_map.at(primary_key);
+                    }
+                }
+                
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    // 新增：将多元素历史数据存储到indicator的存储结构中
+    static void store_multiple_historical_indicator_data(
+            const std::shared_ptr<Indicator>& indicator,
+            const std::string& hist_date,
+            int his_day_index,
+            const std::unordered_map<std::string, std::unordered_map<std::string, GSeries>>& stock_output_data
+    ) {
+        spdlog::info("存储历史日期[{}]的多元素指标数据，his_day_index={}", hist_date, his_day_index);
+        
+        for (const auto& [stock, output_map] : stock_output_data) {
+            auto holder_it = indicator->get_storage().find(stock);
+            if (holder_it != indicator->get_storage().end() && holder_it->second) {
+                spdlog::debug("存储股票{}的历史数据，包含{}个output_key", stock, output_map.size());
+                // 为每个output_key存储历史数据，使用统一的key格式
+                for (const auto& [output_key, series] : output_map) {
+                    // 使用统一的key格式：{output_key}_{his_day_index}
+                    std::string storage_key = fmt::format("{}_{}", output_key, his_day_index);
+                    holder_it->second->set_his_series(output_key, his_day_index, series);
+                    spdlog::debug("存储历史数据: 股票{} -> {}_{} -> {}个数据点", 
+                                 stock, output_key, his_day_index, series.get_size());
+                }
+            } else {
+                spdlog::warn("股票{}在indicator存储中未找到或holder为空", stock);
+            }
+        }
+        
+        // 添加验证日志
+        spdlog::info("历史数据存储完成，验证存储结果...");
+        for (const auto& [stock, output_map] : stock_output_data) {
+            auto holder_it = indicator->get_storage().find(stock);
+            if (holder_it != indicator->get_storage().end() && holder_it->second) {
+                for (const auto& [output_key, _] : output_map) {
+                    // 使用公共方法验证存储结果
+                    GSeries test_series = holder_it->second->his_slice_bar(output_key, his_day_index);
+                    if (test_series.get_size() > 0) {
+                        spdlog::debug("验证成功: 股票{} -> {}_{} -> 数据点{}", 
+                                     stock, output_key, his_day_index, test_series.get_size());
+                    } else {
+                        spdlog::error("验证失败: 股票{} -> {}_{} 未找到或为空", stock, output_key, his_day_index);
+                    }
+                }
+            }
+        }
     }
 
     // 子函数2：历史数据重索引（按T日股票列表对齐）

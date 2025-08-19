@@ -51,15 +51,24 @@ GSeries VolumeFactor::definition(
                 GSeries series = it->second->get_today_min_series("volume", pre_length, i);
                 
                 // get_today_min_series返回的数据结构：
-                // [历史数据(pre_length * indicator_bars_per_day)] + [当日数据(i + 1)]
+                // [历史数据pre_length天] + [历史数据pre_length-1天] + ... + [历史数据1天] + [当日数据(0到i)]
                 // 我们要访问的是当日数据的第i个位置
-                // 当日数据从索引 pre_length * indicator_bars_per_day 开始
-                int indicator_bars_per_day = get_bars_per_day(indicator_freq);  // 动态获取indicator频率
-                int today_data_start = pre_length * indicator_bars_per_day;
-                int today_index = today_data_start + i;  // 当日数据的第i个位置
+                // 当日数据从索引 (历史数据总长度) 开始
                 
-                spdlog::debug("股票{}: {}频率索引={}, 当日数据起始={}, 当日索引={}, 序列大小={}", 
-                             stock, static_cast<int>(indicator_freq), i, today_data_start, today_index, series.get_size());
+                // 计算历史数据的总长度
+                int total_history_length = 0;
+                if (pre_length > 0) {
+                    for (int his_index = pre_length; his_index >= 1; his_index--) {
+                        GSeries his_series = it->second->his_slice_bar("volume", his_index);
+                        total_history_length += his_series.get_size();
+                    }
+                }
+                
+                // 当日数据的索引 = 历史数据总长度 + 当日数据中的位置i
+                int today_index = total_history_length + i;
+                
+                spdlog::debug("股票{}: {}频率索引={}, 历史数据总长度={}, 当日索引={}, 序列大小={}", 
+                             stock, static_cast<int>(indicator_freq), i, total_history_length, today_index, series.get_size());
                 
                 // 修复：检查索引是否在有效范围内
                 if (today_index >= 0 && today_index < series.get_size() && series.is_valid(today_index)) {
@@ -469,16 +478,23 @@ GSeries PriceFactor::definition_with_timestamp_original(
         storage_freq = Frequency::F30MIN;
     }
     
-    // 使用 IndicatorStorageHelper 计算可用的数据范围
-    auto [start_indicator_index, end_indicator_index] = IndicatorStorageHelper::get_available_data_range_from_timestamp(timestamp, storage_freq);
+    // 从配置中获取历史数据需求（这里需要从外部传入，暂时使用默认值）
+    // TODO: 从ModuleConfig或GlobalConfig获取pre_days
+    int pre_days = this->get_pre_days();
+    spdlog::debug("PriceFactor 使用的pre_days={}", pre_days);
+    
+    // 使用新的融合数据范围计算方法
+    auto [start_index, end_index] = IndicatorStorageHelper::get_fused_data_range_from_timestamp(
+        timestamp, storage_freq, pre_days
+    );
 
-    if (start_indicator_index < 0 || end_indicator_index < 0) {
+    if (start_index < 0 || end_index < 0) {
         spdlog::warn("时间戳{}不在交易时间内", timestamp);
         return result;
     }
     
-    spdlog::debug("时间戳驱动PriceFactor计算: timestamp={}, 映射到{}频率范围: [{}, {}]", 
-                  timestamp, static_cast<int>(storage_freq), start_indicator_index, end_indicator_index);
+    spdlog::debug("融合数据驱动PriceFactor计算: timestamp={}, pre_days={}, 映射到{}频率范围: [{}, {}]", 
+                  timestamp, pre_days, static_cast<int>(storage_freq), start_index, end_index);
     
     // 初始化结果序列
     result.resize(sorted_stock_list.size());
@@ -495,20 +511,29 @@ GSeries PriceFactor::definition_with_timestamp_original(
         if (stock_it != diff_storage.end() && stock_it->second) {
             BarSeriesHolder* diff_holder = stock_it->second.get();
             
-            // 计算VWAP：使用当前时间点的amount和volume计算价格
-            // 由于amount和volume都是差分形式，VWAP = amount / volume
-            if (end_indicator_index >= 0 && end_indicator_index < diff_holder->get_m_bar("amount").get_size() && 
-                end_indicator_index < diff_holder->get_m_bar("volume").get_size()) {
-
-                int end_indicator_index_int = end_indicator_index;
-                if(end_indicator_index_int >= 60)
-                {
-                    double amount_value = diff_holder->get_m_bar("amount").get(end_indicator_index_int);
-                    double volume_value = diff_holder->get_m_bar("volume").get(end_indicator_index_int);
-                }
+            // 获取融合数据（历史数据 + 当日数据）
+            auto [fused_amount_series, amount_today_start] = IndicatorStorageHelper::get_fused_series_with_today_index(
+                diff_holder, "amount", pre_days, end_index - (pre_days * get_bars_per_day(storage_freq)), storage_freq
+            );
+            
+            auto [fused_volume_series, volume_today_start] = IndicatorStorageHelper::get_fused_series_with_today_index(
+                diff_holder, "volume", pre_days, end_index - (pre_days * get_bars_per_day(storage_freq)), storage_freq
+            );
+            
+            // 计算当日数据在融合数据中的实际索引
+            int today_end_index = end_index - (pre_days * get_bars_per_day(storage_freq));
+            int amount_fused_index = amount_today_start + today_end_index;
+            int volume_fused_index = volume_today_start + today_end_index;
+            
+            spdlog::debug("股票{}: 融合数据索引映射 - 当日结束={}, amount映射={}, volume映射={}", 
+                         stock, today_end_index, amount_fused_index, volume_fused_index);
+            
+            // 检查索引是否在有效范围内
+            if (amount_fused_index >= 0 && amount_fused_index < fused_amount_series.get_size() && 
+                volume_fused_index >= 0 && volume_fused_index < fused_volume_series.get_size()) {
                 
-                double amount_value = diff_holder->get_m_bar("amount").get(end_indicator_index);
-                double volume_value = diff_holder->get_m_bar("volume").get(end_indicator_index);
+                double amount_value = fused_amount_series.get(amount_fused_index);
+                double volume_value = fused_volume_series.get(volume_fused_index);
                 
                 if (!std::isnan(amount_value) && !std::isnan(volume_value) && volume_value > 0) {
                     value = amount_value / volume_value;  // 计算VWAP
@@ -518,7 +543,9 @@ GSeries PriceFactor::definition_with_timestamp_original(
                     spdlog::debug("股票{}: 当前时间点数据无效 amount={}, volume={}", stock, amount_value, volume_value);
                 }
             } else {
-                spdlog::debug("股票{}: 当前时间点索引{}无效或超出范围", stock, end_indicator_index);
+                spdlog::debug("股票{}: 融合数据索引超出范围 amount_index={}/{}, volume_index={}/{}", 
+                             stock, amount_fused_index, fused_amount_series.get_size(), 
+                             volume_fused_index, fused_volume_series.get_size());
             }
         } else {
             spdlog::debug("股票{}: 找不到DiffIndicator的BarSeriesHolder", stock);

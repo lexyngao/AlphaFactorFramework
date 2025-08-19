@@ -21,6 +21,7 @@
 #include <queue>
 #include <limits>
 #include <atomic>
+#include <spdlog/fmt/bundled/format.h> // 使用项目中已有的fmt库
 
 // 前向声明 - 移除，因为不再需要
 
@@ -739,8 +740,11 @@ class BaseSeriesHolder {  // PDF中为BaseSeriesHolder，修正类名对齐
 protected:
     std::string stock;  // 股票代码
     
-    // T日之前的历史数据：结构：indicator_name -> 日期索引（1=往前1日, 2=往前2日, ..., pre_days=往前pre_days日）-> GSeries
-    std::unordered_map<std::string, std::unordered_map<int, GSeries>> HisBarSeries;
+    // 修改：T日之前的历史数据改为key-value形式，与T日数据兼容
+    // 格式：{output_key}_{his_day_index} -> GSeries
+    // 例如："volume_1" -> GSeries (往前1日), "volume_2" -> GSeries (往前2日)
+    // 这样与T日数据的MBarSeries格式保持一致，便于融合
+    std::unordered_map<std::string, GSeries> HisBarSeries;
 
 public:
     // 1. 构造函数（初始化智能指针）
@@ -765,35 +769,40 @@ public:
     BaseSeriesHolder(const BaseSeriesHolder&) = delete;
     BaseSeriesHolder& operator=(const BaseSeriesHolder&) = delete;
 
-    // 设置历史序列（确保his_day_index>0，PDF 1.3节）
+    // 修改：设置历史序列（使用统一的key格式）
     // 新的索引逻辑：1=往前1日, 2=往前2日, ..., pre_days=往前pre_days日
-    void set_his_series(const std::string& indicator_name, int his_day_index, const GSeries& series) {
+    void set_his_series(const std::string& output_key, int his_day_index, const GSeries& series) {
         if (his_day_index <= 0) {
             spdlog::error("{}: his_day_index must be > 0 (got {})", stock, his_day_index);
             return;
         }
-        HisBarSeries[indicator_name][his_day_index] = series;
+        // 使用统一的key格式：{output_key}_{his_day_index}
+        std::string key = fmt::format("{}_{}", output_key, his_day_index);
+        HisBarSeries[key] = series;
     }
 
-    // 获取历史序列片段（PDF 1.3节）
+    // 修改：获取历史序列片段（使用统一的key格式）
     // 新的索引逻辑：1=往前1日, 2=往前2日, ..., pre_days=往前pre_days日
-    GSeries his_slice_bar(const std::string& indicator_name, int his_day_index) const {
-        if (!HisBarSeries.count(indicator_name)) {
-            spdlog::error("{}: Indicator {} not found in HisBarSeries", stock, indicator_name);
+    GSeries his_slice_bar(const std::string& output_key, int his_day_index) const {
+        std::string key = fmt::format("{}_{}", output_key, his_day_index);
+        if (!HisBarSeries.count(key)) {
+            spdlog::error("{}: Key {} not found in HisBarSeries", stock, key);
+            // 添加调试信息，显示所有可用的键
+            std::string available_keys;
+            for (const auto& [k, _] : HisBarSeries) {
+                if (!available_keys.empty()) available_keys += ", ";
+                available_keys += k;
+            }
+            spdlog::debug("{}: 可用的历史数据键: {}", stock, available_keys);
             return GSeries();
         }
-        const auto& day_map = HisBarSeries.at(indicator_name);
-        if (!day_map.count(his_day_index)) {
-            spdlog::error("{}: Indicator {} day {} not found", stock, indicator_name, his_day_index);
-            return GSeries();
-        }
-        return day_map.at(his_day_index);
+        return HisBarSeries.at(key);
     }
 
     // 获取股票代码
     const std::string& get_stock() const { return stock; }
 
-    // 新增：获取所有indicator key
+    // 修改：获取所有indicator key（现在返回的是完整的key，如"volume_1", "volume_2"等）
     std::vector<std::string> get_all_indicator_keys() const {
         std::vector<std::string> keys;
         for (const auto& kv : HisBarSeries) {
@@ -863,12 +872,17 @@ public:
         std::lock_guard<std::mutex> lock(m_bar_mutex_);
         int minute_len = today_minute_index + 1;
         GSeries today_series;
+        
+        // 1. 先添加历史数据（按pre_length指定的天数）
+        // 历史数据按时间倒序添加：pre_length天 -> pre_length-1天 -> ... -> 1天
         if (pre_length > 0) {
             for (int his_index = pre_length; his_index >= 1; his_index--) {
                 GSeries his_series = his_slice_bar(factor_name, his_index);
                 today_series.append(his_series);
             }
         }
+        
+        // 2. 再添加当日数据（从索引0到today_minute_index）
         if (MBarSeries.count(factor_name)) {
             GSeries cur_series = MBarSeries.at(factor_name).head(minute_len);
             today_series.append(cur_series);
@@ -876,6 +890,9 @@ public:
             spdlog::critical("{} m bar no factor {}", stock, factor_name);
         }
 
+        // 返回的数据结构：
+        // [历史数据pre_length天] + [历史数据pre_length-1天] + ... + [历史数据1天] + [当日数据(0到today_minute_index)]
+        // 总长度 = 历史数据总长度 + (today_minute_index + 1)
         return today_series;
     }
 
@@ -1264,14 +1281,16 @@ public:
 // 因子类：依赖Indicator结果计算，结果存储在factor_storage
 class Factor {
 protected:
-    std::string name_;          // 因子名称（如"volatility"）
-    std::string id_;            // 类名（如"VolatilityFactor"）
+    std::string name_;          // 因子名称（如"volatility")
+    std::string id_;            // 类名（如"VolatilityFactor")
     std::string path_;          // 持久化基础路径
     Frequency frequency_ = Frequency::F1MIN;  // 因子频率，可在构造函数中设置
     // 存储结构：key为时间bar索引（如9:35为0），内层key为因子名
     std::map<int, std::map<std::string, GSeries>> factor_storage;
     // 新增：存储依赖的indicators
     std::vector<const Indicator*> dependent_indicators_;
+    // 新增：历史天数配置（由配置注入）
+    int pre_days_ {0};
 
 public:
     Factor(std::string name, std::string id, std::string path, std::string frequency_str = "1min")
@@ -1294,6 +1313,10 @@ public:
 
     // 纯虚函数：计算因子（由子类实现具体逻辑，依赖Indicator结果）
     virtual void Calculate(const std::vector<const Indicator*>& indicators) = 0;
+
+    // 新增：pre_days配置注入
+    void set_pre_days(int pre_days) { pre_days_ = pre_days; }
+    int get_pre_days() const { return pre_days_; }
 
     // 新增：definition方法，用于计算因子
     virtual GSeries definition(

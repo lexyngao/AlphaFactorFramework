@@ -53,6 +53,9 @@ public:
                     continue;
                 }
                 
+                // 注入pre_days配置
+                factor->set_pre_days(config_.pre_days);
+                
                 engine_.add_factor(factor);
                 factor_map_[module.name] = factor;
             }
