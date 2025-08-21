@@ -360,6 +360,76 @@ public:
         spdlog::info("所有Factor时间事件处理完成");
     }
 
+    // 新增：同步运行的Factor时间处理（与Indicator同时运行）
+    void process_factor_time_events_sync(const std::vector<uint64_t>& time_events) {
+        spdlog::info("开始同步处理{}个时间事件（与Indicator同时运行）", time_events.size());
+        
+        for (const auto& timestamp : time_events) {
+            spdlog::debug("同步处理时间事件: {}", timestamp);
+            
+            // 创建Factor线程组，每个Factor一个线程
+            std::vector<std::thread> factor_threads;
+            
+            for (auto& [factor_name, factor_ptr] : factors_) {
+                factor_threads.emplace_back([this, factor_ptr = factor_ptr, timestamp]() {
+                    try {
+                        // 定义get_indicator函数
+                        auto get_indicator = [this](const std::string& name) -> std::shared_ptr<Indicator> {
+                            std::lock_guard<std::mutex> lock(queue_mutex_);
+                            auto it = indicators_.find(name);
+                            return (it != indicators_.end()) ? it->second : nullptr;
+                        };
+                        
+                        // 优先使用时间戳驱动的接口
+                        GSeries result;
+                        
+                        // 检查Factor是否支持时间戳驱动
+                        if (factor_ptr->get_name() != "default") {
+                            // 尝试使用时间戳驱动
+                            result = factor_ptr->definition_with_timestamp(get_indicator, stock_list_, timestamp);
+                            
+                            // 如果时间戳驱动返回空结果，回退到ti驱动
+                            if (result.get_size() == 0) {
+                                int ti = calculate_time_bucket(timestamp, factor_ptr->get_frequency());
+                                if (ti >= 0) {
+                                    result = factor_ptr->definition_with_accessor(get_indicator, stock_list_, ti);
+                                }
+                            }
+                        } else {
+                            // 回退到原有的ti驱动方式
+                            int ti = calculate_time_bucket(timestamp, factor_ptr->get_frequency());
+                            if (ti >= 0) {
+                                result = factor_ptr->definition_with_accessor(get_indicator, stock_list_, ti);
+                            }
+                        }
+                        
+                        // 将结果存储到factor的存储结构中
+                        if (result.get_size() > 0) {
+                            int ti = calculate_time_bucket(timestamp, factor_ptr->get_frequency());
+                            if (ti >= 0) {
+                                factor_ptr->set_factor_result(ti, result);
+                            }
+                        }
+                        
+                        spdlog::debug("Factor[{}]同步计算完成，时间戳: {}, 有效数据: {}/{}", 
+                                     factor_ptr->get_name(), timestamp, result.get_valid_num(), result.get_size());
+                    } catch (const std::exception& e) {
+                        spdlog::error("Factor[{}]同步计算失败: {}", factor_ptr->get_name(), e.what());
+                    }
+                });
+            }
+            
+            // 等待当前时间事件的所有Factor线程完成
+            for (auto& thread : factor_threads) {
+                thread.join();
+            }
+
+            spdlog::debug("同步时间事件 {} 的所有Factor处理完成", timestamp);
+        }
+        
+        spdlog::info("所有同步Factor时间事件处理完成");
+    }
+
     // 计算时间桶索引（通用函数，支持不同频率）
     int calculate_time_bucket(uint64_t timestamp, Frequency frequency) {
         if (timestamp == 0) return -1;

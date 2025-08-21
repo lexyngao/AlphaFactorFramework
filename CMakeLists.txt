@@ -65,3 +65,20 @@ add_executable(FactorService factor_service.cpp
 
 target_link_libraries(FactorService PRIVATE ZLIB::ZLIB curl)
 set_property(TARGET FactorService PROPERTY CXX_STANDARD 17)
+
+# 共享内存服务（推荐）
+add_executable(SharedMemoryService shared_memory_service.cpp
+        src/config_loader.cpp
+        src/data_loader.cpp
+        src/calculation_engine.cpp
+        src/result_storage.cpp
+        src/tinyxml2.cpp
+        src/tz.cpp
+        src/my_indicator.cpp
+        src/my_factor.cpp
+        src/diff_indicator.cpp
+        src/gseries_impl.cpp
+        src/indicator_storage_helper.cpp)
+
+target_link_libraries(SharedMemoryService PRIVATE ZLIB::ZLIB curl)
+set_property(TARGET SharedMemoryService PROPERTY CXX_STANDARD 17)

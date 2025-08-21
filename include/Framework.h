@@ -63,6 +63,35 @@ public:
         engine_.init_indicator_storage(stock_list_);
     }
 
+    // 新增：注册Indicator到共享存储（供Factor服务使用）
+    void register_indicators_to_shared_storage(const std::vector<ModuleConfig>& modules) {
+        for (const auto& module : modules) {
+            if (module.handler == "Indicator") {
+                std::shared_ptr<Indicator> indicator;
+                
+                // 根据id创建对应的Indicator实例
+                if (module.id == "VolumeIndicator") {
+                    indicator = std::make_shared<VolumeIndicator>(module);
+                } else if (module.id == "AmountIndicator") {
+                    indicator = std::make_shared<AmountIndicator>(module);
+                } else if (module.id == "DiffIndicator") {
+                    indicator = std::make_shared<DiffIndicator>(module);
+                } else {
+                    spdlog::error("未知的Indicator类型: {}", module.id);
+                    continue;
+                }
+                
+                // 加载历史数据到共享存储
+                spdlog::info("加载指标[{}]的历史数据到共享存储", module.name);
+                ResultStorage::load_multi_day_indicators(indicator, module, config_);
+                
+                // 添加到engine的共享存储
+                engine_.add_indicator(module.name, indicator);
+                indicator_map_[module.name] = indicator;
+            }
+        }
+    }
+
     void load_all_indicators() {
         spdlog::info("开始加载所有指标数据...");
         for (const auto& module : config_.modules) {

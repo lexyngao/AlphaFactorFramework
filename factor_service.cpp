@@ -37,34 +37,9 @@ int main() {
         
         framework.register_indicators_factors(factor_modules);
         
-        // 4. 加载已保存的Indicator数据（从文件存储中读取）
-        spdlog::info("开始加载已保存的Indicator数据...");
-        for (const auto& module : config.modules) {
-            if (module.handler == "Indicator") {
-                spdlog::info("加载指标模块: {}", module.name);
-                // 这里需要从文件存储中加载indicator数据
-                // 由于Framework原本设计是同时管理indicator和factor，
-                // 我们需要创建一个临时的indicator实例来加载数据
-                std::shared_ptr<Indicator> temp_indicator;
-                
-                if (module.id == "VolumeIndicator") {
-                    temp_indicator = std::make_shared<VolumeIndicator>(module);
-                } else if (module.id == "AmountIndicator") {
-                    temp_indicator = std::make_shared<AmountIndicator>(module);
-                } else if (module.id == "DiffIndicator") {
-                    temp_indicator = std::make_shared<DiffIndicator>(module);
-                } else {
-                    spdlog::warn("未知的Indicator类型: {}, 跳过", module.id);
-                    continue;
-                }
-                
-                // 加载历史数据
-                ResultStorage::load_multi_day_indicators(temp_indicator, module, config);
-                
-                // 将加载的数据注入到engine中，供factor使用
-                framework.get_engine().add_indicator(module.name, temp_indicator);
-            }
-        }
+        // 4. 加载已保存的Indicator数据到共享存储
+        spdlog::info("开始加载已保存的Indicator数据到共享存储...");
+        framework.register_indicators_to_shared_storage(config.modules);
         
         // 5. 设置factor依赖关系
         framework.setup_factor_dependencies();
