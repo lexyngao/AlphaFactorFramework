@@ -478,8 +478,7 @@ GSeries PriceFactor::definition_with_timestamp_original(
         storage_freq = Frequency::F30MIN;
     }
     
-    // 从配置中获取历史数据需求（这里需要从外部传入，暂时使用默认值）
-    // TODO: 从ModuleConfig或GlobalConfig获取pre_days
+    // 从ModuleConfig或GlobalConfig获取pre_days
     int pre_days = this->get_pre_days();
     spdlog::debug("PriceFactor 使用的pre_days={}", pre_days);
     

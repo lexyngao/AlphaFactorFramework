@@ -237,15 +237,8 @@ public:
         }
     }
 
-    const std::vector<std::string>& get_stock_list() const { return stock_list_; }
-    CalculationEngine& get_engine() { return engine_; }
-    const GlobalConfig& get_config() const { return config_; }
-    const std::unordered_map<std::string, std::shared_ptr<Indicator>>& get_indicator_map() const { return indicator_map_; }
-    const std::unordered_map<std::string, std::shared_ptr<Factor>>& get_factor_map() const { return factor_map_; }
-
-private:
-    // 生成指定间隔的时间点
-    std::vector<uint64_t> generate_time_points(int interval_seconds, const std::string& date_str) {
+    // 新增：生成时间点（供外部调用）
+    std::vector<uint64_t> generate_time_points(int interval_seconds, const std::string& date_str) const {
         std::vector<uint64_t> time_points;
         
         // 解析日期字符串 (格式: YYYYMMDD)
@@ -281,9 +274,17 @@ private:
         spdlog::debug("生成了 {} 个时间点", time_points.size());
         return time_points;
     }
+
+    const std::vector<std::string>& get_stock_list() const { return stock_list_; }
+    CalculationEngine& get_engine() { return engine_; }
+    const GlobalConfig& get_config() const { return config_; }
+    const std::unordered_map<std::string, std::shared_ptr<Indicator>>& get_indicator_map() const { return indicator_map_; }
+    const std::unordered_map<std::string, std::shared_ptr<Factor>>& get_factor_map() const { return factor_map_; }
+
+private:
     
     // 将时间转换为纳秒级时间戳
-    uint64_t convert_to_timestamp(int year, int month, int day, int seconds_in_day) {
+    uint64_t convert_to_timestamp(int year, int month, int day, int seconds_in_day) const {
         int hour = seconds_in_day / 3600;
         int minute = (seconds_in_day % 3600) / 60;
         int second = seconds_in_day % 60;
