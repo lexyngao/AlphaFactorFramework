@@ -419,7 +419,7 @@ static bool load_multiple_indicator_files(
         std::string filename = file_path.filename().string();
         
         // 解析文件名格式：{module.name}_{output_key}_{date}_{frequency}.csv.gz
-        // 例如：DiffIndicator_volume_20240701_1min.csv.gz
+        // 例如：DiffIndicator_volume_20240701_5min.csv.gz
         std::string prefix = fmt::format("{}_", module.name);
         std::string suffix = fmt::format("_{}_{}.csv.gz", date, module.frequency);
         
@@ -456,7 +456,6 @@ static bool load_multiple_indicator_files(
 }
 
 // 保存单个因子模块的结果（从Factor自身的factor_storage读取数据）
-//TODO：暂时取1min
 static bool save_factor(
         const std::shared_ptr<Factor>& factor,  // 目标因子实例
         const ModuleConfig& module,
@@ -479,7 +478,7 @@ static bool save_factor(
         }
 
         // 2. 创建存储目录
-        fs::path base_path = fs::path(module.path) / date / "1min";
+        fs::path base_path = fs::path(module.path) / date / "5min";
         if (!fs::exists(base_path) && !fs::create_directories(base_path)) {
             spdlog::error("创建目录失败: {}", base_path.string());
             return false;
@@ -493,7 +492,7 @@ static bool save_factor(
         }
 
         // 4. 生成GZ压缩文件（格式：因子名_日期_5min.csv.gz）
-        std::string filename = fmt::format("{}_{}_1min.csv.gz", module.name, date);
+        std::string filename = fmt::format("{}_{}_5min.csv.gz", module.name, date);
         fs::path file_path = base_path / filename;
 
         // 5. 写入GZ文件
@@ -727,7 +726,7 @@ private:
             std::string filename = file_path.filename().string();
             
             // 解析文件名格式：{module.name}_{output_key}_{date}_{frequency}.csv.gz
-            // 例如：DiffIndicator_volume_20240701_1min.csv.gz
+            // 例如：DiffIndicator_volume_20240701_5min.csv.gz
             std::string prefix = fmt::format("{}_", module.name);
             std::string suffix = fmt::format("_{}_{}.csv.gz", hist_date, module.frequency);
             

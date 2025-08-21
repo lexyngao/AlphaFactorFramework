@@ -12,6 +12,6 @@
 <!--        <Module handler="Factor" name="volume_factor" id="VolumeFactor" -->
 <!--                path="data/factor" frequency="1min"/>-->
         <Module handler="Factor" name="price_factor" id="PriceFactor" 
-                path="data/factor" frequency="1min"/>
+                path="data/factor" frequency="5min"/>
     </Modules>
 </Tsaigu>
