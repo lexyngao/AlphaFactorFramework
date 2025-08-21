@@ -374,24 +374,43 @@ GSeries GSeries::z_score() const {
 }
 
 GSeries GSeries::mean_fold(const bool & mean_first) const {
-    return GSeries(Increasing::increasing_mean(d_vec));
+    // 使用现有的nanmean方法
+    double mean_val = this->nanmean();
+    std::vector<double> result;
+    for (const auto& val : d_vec) {
+        if (std::isfinite(val)) {
+            double fold_val = mean_first ? -std::abs(val - mean_val) : std::abs(val - mean_val);
+            result.push_back(fold_val);
+        } else {
+            result.push_back(std::numeric_limits<double>::quiet_NaN());
+        }
+    }
+    return GSeries(result);
 }
 
 void GSeries::mean_fold_inplace(const bool & mean_first) {
-    auto new_data = Increasing::increasing_mean(d_vec);
-    d_vec = new_data;
-    valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
+    *this = this->mean_fold(mean_first);
 }
 
 void GSeries::median_fold_inplace(const bool & mean_first) {
-    auto new_data = Increasing::increasing_median(d_vec);
-    d_vec = new_data;
+    // 使用现有的nanmedian方法
+    double median_val = this->nanmedian();
+    for (auto& val : d_vec) {
+        if (std::isfinite(val)) {
+            val = mean_first ? -std::abs(val - median_val) : std::abs(val - median_val);
+        }
+    }
     valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
 }
 
 void GSeries::q75_fold_inplace(const bool & mean_first) {
-    auto new_data = Increasing::increasing_q75(d_vec);
-    d_vec = new_data;
+    // 使用现有的nanquantile方法
+    double q75_val = this->nanquantile(0.75);
+    for (auto& val : d_vec) {
+        if (std::isfinite(val)) {
+            val = mean_first ? -std::abs(val - q75_val) : std::abs(val - q75_val);
+        }
+    }
     valid_num = std::count_if(d_vec.begin(), d_vec.end(), [](double v) { return !std::isnan(v); });
 }
 

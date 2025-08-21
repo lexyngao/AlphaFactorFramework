@@ -1,106 +1,110 @@
 //
-// Created by xzliu on 12/29/21.
+// Created by xzliu on 1/8/22.
 //
 
 #pragma once
 
-#include <vector>
-#include <algorithm>
+#include <iostream>
 #include <cmath>
+#include <string>
+#include <vector>
 #include <limits>
+#include <queue>
+#include "spdlog/spdlog.h"
 
-class Increasing {
+// 增量计算算子基类
+class BaseIncrease {
 public:
-    // 计算递增序列
-    static std::vector<double> increasing(const std::vector<double>& data) {
-        std::vector<double> result(data.size());
-        double cum_sum = 0.0;
-        
-        for (size_t i = 0; i < data.size(); ++i) {
-            if (std::isfinite(data[i])) {
-                cum_sum += data[i];
-                result[i] = cum_sum;
-            } else {
-                result[i] = std::numeric_limits<double>::quiet_NaN();
-            }
-        }
-        
-        return result;
-    }
-    
-    // 计算递增序列的均值
-    static std::vector<double> increasing_mean(const std::vector<double>& data) {
-        std::vector<double> result(data.size());
-        double cum_sum = 0.0;
-        int count = 0;
-        
-        for (size_t i = 0; i < data.size(); ++i) {
-            if (std::isfinite(data[i])) {
-                cum_sum += data[i];
-                count++;
-                result[i] = cum_sum / count;
-            } else {
-                result[i] = std::numeric_limits<double>::quiet_NaN();
-            }
-        }
-        
-        return result;
-    }
-    
-    // 计算递增序列的中位数
-    static std::vector<double> increasing_median(const std::vector<double>& data) {
-        std::vector<double> result(data.size());
-        std::vector<double> valid_data;
-        
-        for (size_t i = 0; i < data.size(); ++i) {
-            if (std::isfinite(data[i])) {
-                valid_data.push_back(data[i]);
-                std::sort(valid_data.begin(), valid_data.end());
-                
-                int n = valid_data.size();
-                if (n % 2 == 0) {
-                    result[i] = (valid_data[n/2 - 1] + valid_data[n/2]) / 2.0;
-                } else {
-                    result[i] = valid_data[n/2];
-                }
-            } else {
-                result[i] = std::numeric_limits<double>::quiet_NaN();
-            }
-        }
-        
-        return result;
-    }
-    
-    // 计算递增序列的75分位数
-    static std::vector<double> increasing_q75(const std::vector<double>& data) {
-        std::vector<double> result(data.size());
-        std::vector<double> valid_data;
-        
-        for (size_t i = 0; i < data.size(); ++i) {
-            if (std::isfinite(data[i])) {
-                valid_data.push_back(data[i]);
-                std::sort(valid_data.begin(), valid_data.end());
-                
-                int n = valid_data.size();
-                if (n > 0) {
-                    double index = 0.75 * (n - 1);
-                    int lower = static_cast<int>(std::floor(index));
-                    int upper = static_cast<int>(std::ceil(index));
-                    
-                    if (lower == upper) {
-                        result[i] = valid_data[lower];
-                    } else {
-                        double weight = index - lower;
-                        result[i] = valid_data[lower] * (1.0 - weight) + valid_data[upper] * weight;
-                    }
-                } else {
-                    result[i] = std::numeric_limits<double>::quiet_NaN();
-                }
-            } else {
-                result[i] = std::numeric_limits<double>::quiet_NaN();
-            }
-        }
-        
-        return result;
-    }
+    virtual void increase(const double& new_val) = 0;
+    virtual double get_value() const = 0;
+    virtual void clear() = 0;
+    virtual ~BaseIncrease() = default;
+};
+
+// 最大值增量计算
+class IncreaseMax : public BaseIncrease {
+private:
+    double max_val = std::numeric_limits<double>::quiet_NaN();
+
+public:
+    void increase(const double& new_val) override;
+    double get_value() const override;
+    void clear() override;
+};
+
+// 最小值增量计算
+class IncreaseMin : public BaseIncrease {
+private:
+    double min_val = std::numeric_limits<double>::quiet_NaN();
+
+public:
+    void increase(const double& new_val) override;
+    double get_value() const override;
+    void clear() override;
+};
+
+// 均值增量计算
+class IncreaseMean : public BaseIncrease {
+private:
+    double mean_val = 0.0;
+    int n = 0;
+
+public:
+    void increase(const double& new_val) override;
+    double get_value() const override;
+    void clear() override;
+};
+
+// 标准差增量计算
+class IncreaseStd : public BaseIncrease {
+private:
+    double mean_val = 0.0;
+    double sum_m2 = 0.0;
+    int n = 0;
+
+public:
+    void increase(const double& new_val) override;
+    double get_value() const override;
+    void clear() override;
+};
+
+// 偏度增量计算
+class IncreaseSkew : public BaseIncrease {
+private:
+    double mean_val = 0.0;
+    double sum_m2 = 0.0;
+    double sum_m3 = 0.0;
+    int n = 0;
+
+public:
+    void increase(const double& new_val) override;
+    double get_value() const override;
+    void clear() override;
+};
+
+// 峰度增量计算
+class IncreaseKurt : public BaseIncrease {
+private:
+    double mean_val = 0.0;
+    double sum_m2 = 0.0;
+    double sum_m3 = 0.0;
+    double sum_m4 = 0.0;
+    int n = 0;
+
+public:
+    void increase(const double& new_val) override;
+    double get_value() const override;
+    void clear() override;
+};
+
+// 中位数增量计算
+class IncreaseMedian : public BaseIncrease {
+private:
+    std::priority_queue<double, std::vector<double>, std::less<double>> p;      // 最大堆（左半部分）
+    std::priority_queue<double, std::vector<double>, std::greater<double>> q;   // 最小堆（右半部分）
+
+public:
+    void increase(const double& num) override;
+    double get_value() const override;
+    void clear() override;
 }; 

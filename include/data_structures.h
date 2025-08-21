@@ -1450,4 +1450,6 @@ inline std::pair<int, int> get_time_bucket_range(int factor_ti, Frequency indica
 // 现在直接使用 IndicatorStorageHelper::get_available_data_range_from_timestamp()
 // 此函数已移除，所有调用都直接使用 IndicatorStorageHelper
 
+// 这些方法已经在GSeries类内部正确声明，无需重复声明
+
 #endif //ALPHAFACTORFRAMEWORK_DATA_STRUCTURES_H
