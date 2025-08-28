@@ -1,5 +1,5 @@
 <Tsaigu>
-    <Universe calculate_date="20240702" stock_universe="1800" pre_days="1"/>
+    <Universe calculate_date="20240702" stock_universe="1800" pre_days="0"/>
     <Modules>
 <!--        <Module handler="Indicator" name="volume" id="VolumeIndicator"-->
 <!--                path="data/indicator" frequency="15S"/>-->
@@ -11,7 +11,7 @@
 <!--        注意 Indicator的frequency可选项为15S, 1min, 5min, 30min-->
 <!--        <Module handler="Factor" name="volume_factor" id="VolumeFactor" -->
 <!--                path="data/factor" frequency="1min"/>-->
-        <Module handler="Factor" name="price_factor" id="PriceFactor" 
+        <Module handler="Factor" name="price_factor" id="PriceFactor"
                 path="data/factor" frequency="5min"/>
     </Modules>
 </Tsaigu>

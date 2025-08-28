@@ -22,11 +22,12 @@ class ResultStorage {
 public:
     // 保存单个指标模块的结果（GZ压缩，行=bar_index，列=stock_code）
 
-    // 保存单个指标模块的结果（从Indicator自身的storage_读取数据）
+    // 保存单个指标模块的结果（从CalculationEngine的BarSeriesHolder读取数据）
     static bool save_indicator(
             const std::shared_ptr<Indicator>& indicator,  // 目标指标实例
             const ModuleConfig& module,
-            const std::string& date
+            const std::string& date,
+            const std::shared_ptr<CalculationEngine>& cal_engine = nullptr  // 新增：计算引擎参数
     ) {
         try {
             // 1. 验证参数有效性
@@ -51,7 +52,7 @@ public:
             if (module.id == "DiffIndicator") {
                 // 尝试转换为DiffIndicator并调用其特殊保存方法
                 if (auto diff_ind = std::dynamic_pointer_cast<DiffIndicator>(indicator)) {
-                    return diff_ind->save_results(module, date);
+                    return diff_ind->save_results(module, date, cal_engine);
                 }
             }
 
@@ -62,16 +63,22 @@ public:
                 return false;
             }
 
-            // 4. 从Indicator的storage_中收集数据（核心修改）
-            const auto& indicator_storage = indicator->get_storage();  // 获取指标自己的存储
-            if (indicator_storage.empty()) {
-                spdlog::warn("指标[{}]的storage_为空，无数据可保存", module.name);
+            // 4. 从CalculationEngine的BarSeriesHolder中收集数据
+            if (!cal_engine) {
+                spdlog::error("CalculationEngine为空，无法获取数据");
+                return false;
+            }
+
+            // 获取所有股票的BarSeriesHolder
+            auto all_bar_holders = cal_engine->get_all_bar_series_holders();
+            if (all_bar_holders.empty()) {
+                spdlog::warn("没有找到任何BarSeriesHolder，无数据可保存");
                 return true;
             }
 
-            // 提取指标实际处理过的股票列表（仅包含有数据的股票）
+            // 提取股票列表
             std::vector<std::string> stock_list;
-            for (const auto& [stock_code, _] : indicator_storage) {
+            for (const auto& [stock_code, _] : all_bar_holders) {
                 stock_list.push_back(stock_code);
             }
 
@@ -80,15 +87,15 @@ public:
             int max_bar_index = -1;
 
             int bars_per_day = indicator->get_bars_per_day();
-            for (const auto& [stock_code, holder_ptr] : indicator_storage) {
+            for (const auto& [stock_code, holder_ptr] : all_bar_holders) {
                 if (!holder_ptr) {
-                    spdlog::warn("指标[{}]的股票[{}]holder为空，跳过", module.name, stock_code);
+                    spdlog::warn("股票[{}]的BarSeriesHolder为空，跳过", stock_code);
                     continue;
                 }
                 
                 const BarSeriesHolder* holder = holder_ptr.get();
                 if (!holder) {
-                    spdlog::warn("指标[{}]的股票[{}]holder指针为空，跳过", module.name, stock_code);
+                    spdlog::warn("股票[{}]的BarSeriesHolder指针为空，跳过", stock_code);
                     continue;
                 }
                 
@@ -101,7 +108,7 @@ public:
                     spdlog::debug("DiffIndicator[{}]使用键名: {}", module.name, key_to_use);
                 }
                 
-                // T日数据现在存储在MBarSeries中
+                // 从BarSeriesHolder获取T日数据
                 GSeries series = holder->get_m_bar(key_to_use);
                 
                 // 检查series是否有效
@@ -186,11 +193,12 @@ public:
         }
     }
 
-// 加载多日指标数据（核心实现）
+    // 加载多日指标数据（核心实现）
     static bool load_multi_day_indicators(
             const std::shared_ptr<Indicator>& indicator,
             const ModuleConfig& module,
-            const GlobalConfig& global_config
+            const GlobalConfig& global_config,
+            const std::shared_ptr<CalculationEngine>& cal_engine = nullptr  // 新增：计算引擎参数
     ) {
         spdlog::info("load_multi_day_indicators 开始执行");
         const std::string& T_date = global_config.calculate_date;
@@ -211,7 +219,7 @@ public:
         // 步骤2：加载T日数据
         spdlog::info("步骤2：加载T日数据");
         bool T_exists = load_single_day_indicator(
-            indicator, module, T_date, T_stock_list
+            indicator, module, T_date, T_stock_list, cal_engine
         );
         if (T_exists) {
             spdlog::info("指标{}T日[{}]指标已存在，直接复用",indicator->name(), T_date);
@@ -302,13 +310,8 @@ public:
                             series.push(NAN);
                         }
                     }
-                    auto holder_it = indicator->get_storage().find(stock);
-                    if (holder_it != indicator->get_storage().end() && holder_it->second) {
-                        // 修改：使用统一的output_key格式存储历史数据
-                        // 对于单元素指标，使用module.name作为output_key
-                        std::string output_key = module.name;  // 默认使用module.name
-                        holder_it->second->set_his_series(output_key, i, series);
-                    }
+                    // TODO: 由于Indicator不再有本地存储，需要从CalculationEngine获取数据
+                    spdlog::warn("load_and_reindex_indicator: 需要从CalculationEngine获取数据，当前跳过存储");
                 }
                 spdlog::info("历史日期[{}]单元素指标重索引完成", hist_date);
             }
@@ -317,12 +320,13 @@ public:
     }
 
 
-// 子函数1：加载单一日指标，直接写入indicator->get_storage()
+// 子函数1：加载单一日指标，直接写入CalculationEngine的BarSeriesHolder
 static bool load_single_day_indicator(
         const std::shared_ptr<Indicator>& indicator,
         const ModuleConfig& module,
         const std::string& date,
-        const std::vector<std::string>& T_stock_list
+        const std::vector<std::string>& T_stock_list,
+        const std::shared_ptr<CalculationEngine>& cal_engine = nullptr  // 新增：计算引擎参数
 ) {
     // 更新indicator的频率为配置文件中指定的频率
     indicator->set_storage_frequency(module.frequency);
@@ -335,7 +339,7 @@ static bool load_single_day_indicator(
                                                    module.name, date, module.frequency);
     if (fs::exists(single_file)) {
         spdlog::info("发现单文件指标：{}", single_file.string());
-        return load_single_indicator_file(indicator, module, date, T_stock_list, single_file);
+        return load_single_indicator_file(indicator, module, date, T_stock_list, single_file, cal_engine);
     }
     
     // 2. 扫描多文件（DiffIndicator等）
@@ -345,7 +349,7 @@ static bool load_single_day_indicator(
     
     if (!files.empty()) {
         spdlog::info("发现多文件指标，共{}个文件", files.size());
-        return load_multiple_indicator_files(indicator, module, date, T_stock_list, files);
+        return load_multiple_indicator_files(indicator, module, date, T_stock_list, files, cal_engine);
     }
     
     spdlog::warn("未找到指标文件：{}", base_path.string());
@@ -388,7 +392,8 @@ static bool load_single_indicator_file(
         const ModuleConfig& module,
         const std::string& date,
         const std::vector<std::string>& T_stock_list,
-        const fs::path& file_path
+        const fs::path& file_path,
+        const std::shared_ptr<CalculationEngine>& cal_engine = nullptr  // 新增：计算引擎参数
 ) {
     // 解析文件到stock->GSeries
     std::unordered_map<std::string, GSeries> stock_series;
@@ -396,15 +401,30 @@ static bool load_single_indicator_file(
         spdlog::error("解析T日[{}]指标文件失败", date);
         return false;
     }
-    // 直接写入indicator的存储结构（T日数据）
-    for (const auto& stock : T_stock_list) {
-        auto holder_it = indicator->get_storage().find(stock);
-        if (holder_it != indicator->get_storage().end() && holder_it->second) {
-            // T日数据使用offline_set_m_bar方法存储到MBarSeries中
-            holder_it->second->offline_set_m_bar(module.name, stock_series[stock]);
+    
+    // 直接写入CalculationEngine的BarSeriesHolder（T日数据）
+    if (cal_engine) {
+        auto all_bar_holders = cal_engine->get_all_bar_series_holders();
+        for (const auto& [stock_code, holder_ptr] : all_bar_holders) {
+            if (!holder_ptr) continue;
+            
+            BarSeriesHolder* holder = holder_ptr.get();
+            if (!holder) continue;
+            
+            // 检查是否有该股票的数据
+            if (stock_series.count(stock_code)) {
+                // 使用新的方法，按照frequency.indicator_name.pre_length格式存储
+                holder->offline_set_m_bar_with_frequency(module.frequency, module.name, stock_series[stock_code], 0);
+                spdlog::debug("已加载股票[{}]的指标[{}]数据到BarSeriesHolder，key格式: {}.{}.0", 
+                             stock_code, module.name, module.frequency, module.name);
+            }
         }
+        return true;
+    } else {
+        // 如果没有CalculationEngine，暂时跳过存储
+        spdlog::warn("load_single_indicator_file: CalculationEngine为空，跳过存储");
+        return true;
     }
-    return true;
 }
 
 // 辅助函数：加载多个指标文件（解析output_key并存储）
@@ -413,7 +433,8 @@ static bool load_multiple_indicator_files(
         const ModuleConfig& module,
         const std::string& date,
         const std::vector<std::string>& T_stock_list,
-        const std::vector<fs::path>& files
+        const std::vector<fs::path>& files,
+        const std::shared_ptr<CalculationEngine>& cal_engine = nullptr  // 新增：计算引擎参数
 ) {
     for (const auto& file_path : files) {
         std::string filename = file_path.filename().string();
@@ -442,25 +463,38 @@ static bool load_multiple_indicator_files(
             continue;
         }
         
-        // 直接写入indicator的存储结构（T日数据），使用output_key作为存储键
-        for (const auto& stock : T_stock_list) {
-            auto holder_it = indicator->get_storage().find(stock);
-            if (holder_it != indicator->get_storage().end() && holder_it->second) {
-                // T日数据使用offline_set_m_bar方法存储到MBarSeries中，键名为output_key
-                holder_it->second->offline_set_m_bar(output_key, stock_series[stock]);
+        // 直接写入CalculationEngine的BarSeriesHolder（T日数据），使用output_key作为存储键
+        if (cal_engine) {
+            auto all_bar_holders = cal_engine->get_all_bar_series_holders();
+            for (const auto& [stock_code, holder_ptr] : all_bar_holders) {
+                if (!holder_ptr) continue;
+                
+                BarSeriesHolder* holder = holder_ptr.get();
+                if (!holder) continue;
+                
+                // 检查是否有该股票的数据
+                if (stock_series.count(stock_code)) {
+                    // 使用新的方法，按照frequency.indicator_name.pre_length格式存储
+                    holder->offline_set_m_bar_with_frequency(module.frequency, output_key, stock_series[stock_code], 0);
+                    spdlog::debug("已加载股票[{}]的指标[{}] output_key[{}]数据到BarSeriesHolder，key格式: {}.{}.0", 
+                                 stock_code, module.name, output_key, module.frequency, output_key);
+                }
             }
+        } else {
+            spdlog::warn("load_multiple_indicator_files: CalculationEngine为空，跳过存储");
         }
     }
     
     return true;
 }
 
-// 保存单个因子模块的结果（从Factor自身的factor_storage读取数据）
+// 保存单个因子模块的结果（从CalculationEngine的BarSeriesHolder读取数据）
 static bool save_factor(
         const std::shared_ptr<Factor>& factor,  // 目标因子实例
         const ModuleConfig& module,
         const std::string& date,
-        const std::vector<std::string>& stock_list  // 股票列表
+        const std::vector<std::string>& stock_list,  // 股票列表
+        const std::shared_ptr<CalculationEngine>& cal_engine = nullptr  // 新增：计算引擎参数
 ) {
     try {
         // 1. 验证参数有效性
@@ -484,10 +518,36 @@ static bool save_factor(
             return false;
         }
 
-        // 3. 从Factor的factor_storage中收集数据
-        const auto& factor_storage = factor->get_storage();
-        if (factor_storage.empty()) {
-            spdlog::warn("因子[{}]的factor_storage为空，无数据可保存", module.name);
+        // 3. 从CalculationEngine的Factor存储中收集数据
+        if (!cal_engine) {
+            spdlog::error("CalculationEngine为空，无法获取数据");
+            return false;
+        }
+        
+        // 收集因子数据
+        std::map<int, std::map<std::string, double>> factor_data;  // bar_index -> {股票 -> 数值}
+        int max_bar_index = -1;
+        
+        // 从CalculationEngine的Factor存储中获取数据
+        auto factor_data_map = cal_engine->get_factor_data(module.name);
+        if (factor_data_map.empty()) {
+            spdlog::warn("因子[{}]在CalculationEngine中无数据可保存", module.name);
+            return true;
+        }
+        
+        // 遍历Factor存储的每个时间桶
+        for (const auto& [ti, stock_value_map] : factor_data_map) {
+            // 遍历每个股票的数值
+            for (const auto& [stock_code, value] : stock_value_map) {
+                if (!std::isnan(value)) {
+                    factor_data[ti][stock_code] = value;
+                    if (ti > max_bar_index) max_bar_index = ti;
+                }
+            }
+        }
+
+        if (factor_data.empty()) {
+            spdlog::warn("因子[{}]无有效数据可保存", module.name);
             return true;
         }
 
@@ -513,51 +573,36 @@ static bool save_factor(
         gzwrite(gz_file, header.data(), header.size());
 
         // 5.2 按bar_index写入每行数据
-        for (const auto& [bar_index, factor_data] : factor_storage) {
-            std::string line = std::to_string(bar_index);  // 行首为bar_index
+        for (int ti = 0; ti <= max_bar_index; ++ti) {
+            std::string line = std::to_string(ti);  // 行首为bar_index
 
-            // 获取该时间桶的因子数据
-            auto factor_it = factor_data.find(module.name);
-            if (factor_it != factor_data.end()) {
-                const GSeries& series = factor_it->second;
-                
-                // 检查series是否有效
-                if (series.get_size() == 0) {
-                    spdlog::warn("因子[{}]时间桶[{}]数据为空，填充空值", module.name, bar_index);
-                    // 填充空值
-                    for (size_t i = 0; i < stock_list.size(); ++i) {
-                        line += ",";
-                    }
-                } else {
-                    // 为每个股票填充对应bar的数据
-                    for (int i = 0; i < series.get_size() && i < static_cast<int>(stock_list.size()); ++i) {
-                        double value = series.get(i);
+            // 为每个股票填充对应bar的数据
+            for (const auto& stock_code : stock_list) {
+                auto bar_it = factor_data.find(ti);
+                if (bar_it != factor_data.end()) {
+                    auto stock_it = bar_it->second.find(stock_code);
+                    if (stock_it != bar_it->second.end()) {
+                        double value = stock_it->second;
                         if (std::isnan(value)) {
-                            line += ",";  // 无数据（留空）
+                            line += ",";  // NaN值留空
                         } else {
                             line += fmt::format(",{:.6f}", value);  // 有数据
                         }
+                    } else {
+                        line += ",";  // 无数据（留空）
                     }
-                    
-                    // 如果series长度小于股票列表长度，补充空值
-                    for (size_t i = series.get_size(); i < stock_list.size(); ++i) {
-                        line += ",";
-                    }
-                }
-            } else {
-                // 该时间桶没有该因子的数据，填充空值
-                for (size_t i = 0; i < stock_list.size(); ++i) {
-                    line += ",";
+                } else {
+                    line += ",";  // 该bar_index无任何数据
                 }
             }
             line += "\n";
             gzwrite(gz_file, line.data(), line.size());
         }
-
+        
         // 6. 关闭文件并输出日志
         gzclose(gz_file);
         spdlog::info("因子[{}]数据保存成功：{}（{}个时间桶）",
-                     module.name, file_path.string(), factor_storage.size());
+                     module.name, file_path.string(), max_bar_index + 1);
         return true;
 
     } catch (const std::exception& e) {
@@ -799,40 +844,8 @@ private:
     ) {
         spdlog::info("存储历史日期[{}]的多元素指标数据，his_day_index={}", hist_date, his_day_index);
         
-        for (const auto& [stock, output_map] : stock_output_data) {
-            auto holder_it = indicator->get_storage().find(stock);
-            if (holder_it != indicator->get_storage().end() && holder_it->second) {
-                spdlog::debug("存储股票{}的历史数据，包含{}个output_key", stock, output_map.size());
-                // 为每个output_key存储历史数据，使用统一的key格式
-                for (const auto& [output_key, series] : output_map) {
-                    // 使用统一的key格式：{output_key}_{his_day_index}
-                    std::string storage_key = fmt::format("{}_{}", output_key, his_day_index);
-                    holder_it->second->set_his_series(output_key, his_day_index, series);
-                    spdlog::debug("存储历史数据: 股票{} -> {}_{} -> {}个数据点", 
-                                 stock, output_key, his_day_index, series.get_size());
-                }
-            } else {
-                spdlog::warn("股票{}在indicator存储中未找到或holder为空", stock);
-            }
-        }
-        
-        // 添加验证日志
-        spdlog::info("历史数据存储完成，验证存储结果...");
-        for (const auto& [stock, output_map] : stock_output_data) {
-            auto holder_it = indicator->get_storage().find(stock);
-            if (holder_it != indicator->get_storage().end() && holder_it->second) {
-                for (const auto& [output_key, _] : output_map) {
-                    // 使用公共方法验证存储结果
-                    GSeries test_series = holder_it->second->his_slice_bar(output_key, his_day_index);
-                    if (test_series.get_size() > 0) {
-                        spdlog::debug("验证成功: 股票{} -> {}_{} -> 数据点{}", 
-                                     stock, output_key, his_day_index, test_series.get_size());
-                    } else {
-                        spdlog::error("验证失败: 股票{} -> {}_{} 未找到或为空", stock, output_key, his_day_index);
-                    }
-                }
-            }
-        }
+        // TODO: 由于Indicator不再有本地存储，需要从CalculationEngine获取数据
+        spdlog::warn("store_historical_data: 需要从CalculationEngine获取数据，当前跳过存储");
     }
 
     // 子函数2：历史数据重索引（按T日股票列表对齐）

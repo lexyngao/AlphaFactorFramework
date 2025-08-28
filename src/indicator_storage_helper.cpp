@@ -203,41 +203,9 @@ void IndicatorStorageHelper::store_value(
     }
     
     // 获取 Indicator 的存储空间
-    const auto& storage = indicator->get_storage();
-    auto it = storage.find(stock_code);
-    
-    if (it == storage.end()) {
-        spdlog::warn("未找到股票{}的存储空间", stock_code);
-        return;
-    }
-    
-    // 存储到正确的时间桶
-    BarSeriesHolder* holder = it->second.get();
-    if (!holder) {
-        spdlog::error("股票{}的BarSeriesHolder为空", stock_code);
-        return;
-    }
-    
-    // 获取或创建GSeries
-    GSeries series = holder->get_m_bar(key);
-    if (series.empty()) {
-        series = GSeries();
-        series.resize(indicator->get_bars_per_day());
-        spdlog::debug("为股票{}创建新的{} GSeries，大小={}", 
-                     stock_code, key, indicator->get_bars_per_day());
-    }
-    
-    // 在时间桶内累加值（如果已有值）
-    double existing_value = series.get(time_bucket);
-    if (!std::isnan(existing_value)) {
-        value += existing_value;
-        spdlog::debug("股票{}在桶{}中累加{}: {} + {} = {}", 
-                     stock_code, time_bucket, key, existing_value, value - existing_value, value);
-    }
-    
-    // 设置值
-    series.set(time_bucket, value);
-    holder->offline_set_m_bar(key, series);
+    // TODO: 由于Indicator不再有本地存储，需要从CalculationEngine获取BarSeriesHolder
+    spdlog::warn("IndicatorStorageHelper::store_value: 需要从CalculationEngine获取BarSeriesHolder，当前跳过存储");
+    return;
     
     spdlog::debug("存储成功: stock={}, key={}, bucket={}, value={}, frequency={}", 
                  stock_code, key, time_bucket, value, static_cast<int>(frequency));

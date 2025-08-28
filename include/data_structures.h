@@ -5,6 +5,9 @@
 #ifndef ALPHAFACTORFRAMEWORK_DATA_STRUCTURES_H
 #define ALPHAFACTORFRAMEWORK_DATA_STRUCTURES_H
 
+// 前向声明，避免循环包含
+class CalculationEngine;
+
 #include <string>
 #include <unordered_map>
 #include <map>
@@ -22,6 +25,7 @@
 #include <limits>
 #include <atomic>
 #include <spdlog/fmt/bundled/format.h> // 使用项目中已有的fmt库
+#include <chrono>
 
 // 前向声明 - 移除，因为不再需要
 
@@ -812,7 +816,15 @@ public:
     }
 };
 
-// BarSeriesHolder：包含T日数据的子类
+// 频率类型定义（需要在BarSeriesHolder之前定义）
+enum class Frequency {
+    F15S,   // 15秒
+    F1MIN,  // 1分钟
+    F5MIN,  // 5分钟
+    F30MIN  // 30分钟
+};
+
+// BarSeriesHolder：包含T日数据的子类，扩展支持多频率管理
 class BarSeriesHolder : public BaseSeriesHolder {
 private:
     int current_time = 0;
@@ -820,12 +832,34 @@ private:
     double pre_close = 0.0;
     std::unordered_map<std::string, GSeries> MBarSeries; // today m bar
     mutable std::mutex m_bar_mutex_; // 保护MBarSeries的互斥锁
+    
+    // 新增：四个频率的时间桶映射：{时间戳 -> 桶索引}
+    // 例如：{930: 0, 931: 1, 932: 2, ...}
+    // 注意：现在使用数学计算替代map查找，这些map不再需要
+    // std::unordered_map<int, int> t15_bar_map_;   // 15秒频率：{930:0, 931:1, ...}
+    // std::unordered_map<int, int> m1_bar_map_;    // 1分钟频率：{930:0, 940:1, 950:2, ...}
+    // std::unordered_map<int, int> m5_bar_map_;    // 5分钟频率：{930:0, 935:1, 940:2, ...}
+    // std::unordered_map<int, int> m30_bar_map_;   // 30分钟频率：{930:0, 1000:1, 1030:2, ...}
+    
+    // 新增：四个频率的bar末时间列表：记录每个桶索引对应的实际结束时间
+    std::vector<int> t15_bar_end_list_;         // [930, 931, 932, ...]
+    std::vector<int> m1_bar_end_list_;          // [930, 940, 950, ...]
+    std::vector<int> m5_bar_end_list_;          // [930, 935, 940, ...]
+    std::vector<int> m30_bar_end_list_;         // [930, 1000, 1030, ...]
+    
+    // 新增：四个频率的当前索引
+    int t15_idx_ = 0;                           // 15秒频率当前索引
+    int m1_idx_ = 0;                            // 1分钟频率当前索引
+    int m5_idx_ = 0;                            // 5分钟频率当前索引
+    int m30_idx_ = 0;                           // 30分钟频率当前索引
 
 public:
     bool status = false;
 
     // 继承构造函数
-    explicit BarSeriesHolder(std::string stock_code) : BaseSeriesHolder(std::move(stock_code)) {}
+    explicit BarSeriesHolder(std::string stock_code) : BaseSeriesHolder(std::move(stock_code)) {
+        initialize_time_mappings();
+    }
     
     // 继承移动构造函数
     BarSeriesHolder(BarSeriesHolder&& other) noexcept 
@@ -901,6 +935,29 @@ public:
         MBarSeries[factor_name] = val;
         status = true;
     }
+    
+    // 新增：按照frequency.indicator_name.pre_length格式存储数据
+    void offline_set_m_bar_with_frequency(const std::string& frequency_str, const std::string& indicator_name, const GSeries& val, int pre_length = 0) {
+        std::lock_guard<std::mutex> lock(m_bar_mutex_);
+        
+        // 构建完整的key：frequency.indicator_name.pre_length
+        std::string key = fmt::format("{}.{}.{}", frequency_str, indicator_name, pre_length);
+        // 已经构造好frequency.indicator_name.pre_length
+//        std::string key = indicator_name;
+        
+        MBarSeries[key] = val;
+        status = true;
+        
+        spdlog::info("[BarSeriesHolder] {} 离线存储数据: {} = GSeries(大小:{})", stock, key, val.get_size());
+        
+        // 添加调试信息：显示当前存储的所有key
+        std::string all_keys;
+        for (const auto& [k, _] : MBarSeries) {
+            if (!all_keys.empty()) all_keys += ", ";
+            all_keys += k;
+        }
+        spdlog::info("[BarSeriesHolder] {} 当前存储的所有key: [{}]", stock, all_keys);
+    }
 
     // 新增：获取T日（今天）的数据
     GSeries get_m_bar(const std::string& factor_name) const {
@@ -930,6 +987,349 @@ public:
         }
         return keys;
     }
+    
+    // 新增：核心方法1 - Factor调用的数据获取函数
+    GSeries get_data(Frequency frequency, const std::string& indicator_name, int pre_length, int today_index) {
+        std::lock_guard<std::mutex> lock(m_bar_mutex_);
+        
+        // 构建完整的key
+        std::string freq_str = get_frequency_string(frequency);
+        std::string key = fmt::format("{}.{}.{}", freq_str, indicator_name, pre_length);
+        
+        // 尝试从当前存储获取
+        auto it = MBarSeries.find(key);
+        if (it != MBarSeries.end()) {
+            GSeries result = it->second;
+            if (today_index >= 0 && today_index < result.get_size()) {
+                return result.head(today_index + 1);  // 返回从0到today_index的数据
+            }
+            return result;
+        }
+        
+        // 如果当前存储没有，尝试从历史数据获取
+        if (pre_length > 0) {
+            return his_slice_bar(indicator_name, pre_length);
+        }
+        
+        spdlog::warn("[BarSeriesHolder] {} 未找到数据: {}", stock, key);
+        
+        // 添加调试信息：显示当前存储的所有key
+        std::string all_keys;
+        for (const auto& [k, _] : MBarSeries) {
+            if (!all_keys.empty()) all_keys += ", ";
+            all_keys += k;
+        }
+        spdlog::warn("[BarSeriesHolder] {} 当前存储的所有key: [{}]", stock, all_keys);
+        return GSeries();
+    }
+    
+    // 新增：核心方法2 - 更新数据（不传递时间戳，时间由频率和索引决定）
+    void update(Frequency frequency, const std::string& indicator_name, double value) {
+        std::lock_guard<std::mutex> lock(m_bar_mutex_);
+        
+        // 获取当前索引
+        int current_idx = get_idx(frequency);
+        if (current_idx < 0) {
+            spdlog::warn("[BarSeriesHolder] {} 频率{}的索引无效", stock, static_cast<int>(frequency));
+            return;
+        }
+        
+        // 构建key（pre_length=0表示当日数据）
+        std::string freq_str = get_frequency_string(frequency);
+         std::string key = fmt::format("{}.{}.0", freq_str, indicator_name);
+//        std::string key =  indicator_name;
+        
+        // 获取或创建GSeries
+        auto it = MBarSeries.find(key);
+        if (it == MBarSeries.end()) {
+            // 创建新的GSeries，大小根据频率确定
+            int size = get_bars_per_day(frequency);
+            MBarSeries[key] = GSeries(size, std::numeric_limits<double>::quiet_NaN());
+            it = MBarSeries.find(key);
+        }
+        
+        // 设置值
+        it->second.set(current_idx, value);
+        
+        spdlog::debug("[BarSeriesHolder] {} 更新 {}[{}] = {}", stock, key, current_idx, value);
+        
+        // 添加调试信息：显示当前存储的所有key
+        std::string all_keys;
+        for (const auto& [k, _] : MBarSeries) {
+            if (!all_keys.empty()) all_keys += ", ";
+            all_keys += k;
+        }
+        spdlog::debug("[BarSeriesHolder] {} 当前存储的所有key: {}", stock, all_keys);
+    }
+    
+    // 新增：核心方法3 - 时间更新函数，完成分桶任务
+    void update_time(uint64_t real_time) {
+        auto start_time = std::chrono::high_resolution_clock::now();
+        
+        // 处理时间戳：如果大于1000000000，说明是纳秒级时间戳，需要转换
+        // 如果小于1000000000，说明已经是秒数，直接使用
+        int64_t total_seconds;
+        if (real_time > 1000000000) {
+            // 纳秒级时间戳，转换为秒
+            total_seconds = real_time / 1000000000;
+        } else {
+            // 已经是秒数，直接使用
+            total_seconds = real_time;
+        }
+        
+        // 直接使用输入的时间，不进行任何时区转换
+        // 假设输入的时间已经是正确的北京时间
+        int64_t seconds_in_day = total_seconds % 86400 + 28800;//北京时间
+        int hour = static_cast<int>(seconds_in_day / 3600);
+        int minute = static_cast<int>((seconds_in_day % 3600) / 60);
+        int second = static_cast<int>(seconds_in_day % 60);
+        int total_minutes = hour * 60 + minute;
+        
+        auto time_calc_end = std::chrono::high_resolution_clock::now();
+        auto time_calc_duration = std::chrono::duration_cast<std::chrono::microseconds>(time_calc_end - start_time);
+        
+        spdlog::debug("[BarSeriesHolder] {} 时间更新: {}:{}:{} -> 总分钟:{}, 秒:{}, 时间计算耗时:{}μs", 
+                     stock, hour, minute, second, total_minutes, second, time_calc_duration.count());
+        
+        // 更新各频率的索引，根据频率特性传递不同的时间值
+        auto index_update_start = std::chrono::high_resolution_clock::now();
+        update_frequency_index(Frequency::F15S, total_minutes * 60 + second);  // 15秒频率需要精确到秒
+        update_frequency_index(Frequency::F1MIN, total_minutes * 60);          // 1分钟频率只需要分钟
+        update_frequency_index(Frequency::F5MIN, total_minutes * 60);          // 5分钟频率只需要分钟
+        update_frequency_index(Frequency::F30MIN, total_minutes * 60);         // 30分钟频率只需要分钟
+        auto index_update_end = std::chrono::high_resolution_clock::now();
+        auto index_update_duration = std::chrono::duration_cast<std::chrono::microseconds>(index_update_end - index_update_start);
+        
+        auto total_duration = std::chrono::duration_cast<std::chrono::microseconds>(index_update_end - start_time);
+        
+        spdlog::debug("[BarSeriesHolder] {} 索引更新完成: t15:{}, m1:{}, m5:{}, m30:{}, 索引更新耗时:{}μs, 总耗时:{}μs", 
+                     stock, t15_idx_, m1_idx_, m5_idx_, m30_idx_, index_update_duration.count(), total_duration.count());
+    }
+    
+    // 新增：核心方法4 - 获取指定频率的当前索引
+    int get_idx(Frequency frequency) const {
+        switch (frequency) {
+            case Frequency::F15S: return t15_idx_;
+            case Frequency::F1MIN: return m1_idx_;
+            case Frequency::F5MIN: return m5_idx_;
+            case Frequency::F30MIN: return m30_idx_;
+            default: return -1;
+        }
+    }
+    
+    // 新增：重置所有索引（用于每天开始时）
+    void reset_indices() {
+        t15_idx_ = 0;
+        m1_idx_ = 0;
+        m5_idx_ = 0;
+        m30_idx_ = 0;
+        spdlog::debug("[BarSeriesHolder] {} 索引已重置", stock);
+    }
+    
+    // 新增：清空当日数据（用于每天开始时）
+    void clear_daily_data() {
+        std::lock_guard<std::mutex> lock(m_bar_mutex_);
+        MBarSeries.clear();
+        spdlog::debug("[BarSeriesHolder] {} 当日数据已清空", stock);
+    }
+    
+private:
+    // 新增：初始化时间映射（优化版本）
+    void initialize_time_mappings() {
+        // 清空现有映射
+        t15_bar_end_list_.clear();
+        m1_bar_end_list_.clear();
+        m5_bar_end_list_.clear();
+        m30_bar_end_list_.clear();
+        
+        // 只存储桶的边界时间，不存储每个时间点的映射
+        // 15秒频率：上午9:30-11:30 (120分钟) + 下午13:00-14:57 (117分钟) = 237分钟 = 948个桶
+        for (int i = 0; i < 948; ++i) {
+            int start_minutes = 9 * 60 + 30 + (i * 15) / 60;  // 桶开始时间（分钟）
+            int start_seconds = (i * 15) % 60;                  // 桶开始时间（秒）
+            int start_total_seconds = start_minutes * 60 + start_seconds;
+            t15_bar_end_list_.push_back(start_total_seconds);
+        }
+        
+        // 1分钟频率：237个桶
+        for (int i = 0; i < 237; ++i) {
+            int start_minutes = 9 * 60 + 30 + i;  // 桶开始时间（分钟）
+            int start_total_seconds = start_minutes * 60;
+            m1_bar_end_list_.push_back(start_total_seconds);
+        }
+        
+        // 5分钟频率：48个桶
+        for (int i = 0; i < 48; ++i) {
+            int start_minutes = 9 * 60 + 30 + i * 5;  // 桶开始时间（分钟）
+            int start_total_seconds = start_minutes * 60;
+            m5_bar_end_list_.push_back(start_total_seconds);
+        }
+        
+        // 30分钟频率：8个桶
+        for (int i = 0; i < 8; ++i) {
+            int start_minutes = 9 * 60 + 30 + i * 30;  // 桶开始时间（分钟）
+            int start_total_seconds = start_minutes * 60;
+            m30_bar_end_list_.push_back(start_total_seconds);
+        }
+        
+        spdlog::debug("[BarSeriesHolder] {} 时间映射初始化完成: t15={}, m1={}, m5={}, m30={}", 
+                     stock, t15_bar_end_list_.size(), m1_bar_end_list_.size(), m5_bar_end_list_.size(), m30_bar_end_list_.size());
+    }
+    
+public:
+    // 新增：高效的时间桶索引计算（替代map查找）
+    int calculate_time_bucket_index(Frequency frequency, int time_seconds) const {
+        const std::vector<int>& end_list = get_bar_end_list(frequency);
+        
+        // 特殊时间段处理
+        if (time_seconds <  ((9 * 60 + 30) * 60)) {
+            // 8:00-9:30 映射到 9:30 (索引0)
+            return 0;
+        } else if (time_seconds >= (11 * 60 + 30) * 60 && time_seconds < 13 * 60 * 60) {
+            // 11:30-13:00 午休时间，映射到 13:00
+            switch (frequency) {
+                case Frequency::F15S: return 480;  // 13:00对应的15秒桶索引
+                case Frequency::F1MIN: return 120; // 13:00对应的1分钟桶索引
+                case Frequency::F5MIN: return 24;  // 13:00对应的5分钟桶索引
+                case Frequency::F30MIN: return 4;  // 13:00对应的30分钟桶索引
+                default: return 0;
+            }
+        } else if (time_seconds >= (14 * 60 + 57) * 60 && time_seconds < 15 * 60 * 60) {
+            // 14:57-15:00 映射到 14:57
+            switch (frequency) {
+                case Frequency::F15S: return 947;  // 14:57对应的15秒桶索引
+                case Frequency::F1MIN: return 236; // 14:57对应的1分钟桶索引
+                case Frequency::F5MIN: return 47;  // 14:57对应的5分钟桶索引
+                case Frequency::F30MIN: return 7;  // 14:57对应的30分钟桶索引
+                default: return 0;
+            }
+        }
+        
+        // 正常时间段：使用二分查找找到对应的时间桶
+        int bucket_size = get_bucket_size(frequency);
+
+        
+        int bucket_index;
+        
+        if (time_seconds >= 13 * 60 * 60) {
+            // 下午时间段：13:00-15:00，基于13:00重新计算
+            int afternoon_start_time = 13 * 60 * 60;  // 13:00:00
+            int afternoon_bucket_index = (time_seconds - afternoon_start_time) / bucket_size;
+            
+            // 获取午休时间对应的索引作为偏移量
+            int lunch_offset;
+            switch (frequency) {
+                case Frequency::F15S: 
+                    lunch_offset = 480;  // 13:00对应的15秒桶索引
+                    break;
+                case Frequency::F1MIN: 
+                    lunch_offset = 120; // 13:00对应的1分钟桶索引
+                    break;
+                case Frequency::F5MIN: 
+                    lunch_offset = 24;  // 13:00对应的5分钟桶索引
+                    break;
+                case Frequency::F30MIN: 
+                    lunch_offset = 4;  // 13:00对应的30分钟桶索引
+                    break;
+                default: 
+                    lunch_offset = 0;
+                    break;
+            }
+            
+            bucket_index = lunch_offset + afternoon_bucket_index;
+        } else {
+            // 上午时间段：9:30-11:30，基于9:30计算
+            int start_time = 9 * 60 * 60 + 30 * 60;  // 9:30:00
+            bucket_index = (time_seconds - start_time) / bucket_size;
+        }
+        
+        // 检查是否在有效范围内
+        if (bucket_index >= 0 && bucket_index < static_cast<int>(end_list.size())) {
+            return bucket_index;
+        }
+        
+        return -1;  // 无效时间
+    }
+    
+    // 新增：获取桶大小（秒）
+    int get_bucket_size(Frequency frequency) const {
+        switch (frequency) {
+            case Frequency::F15S: return 15;
+            case Frequency::F1MIN: return 60;
+            case Frequency::F5MIN: return 300;
+            case Frequency::F30MIN: return 1800;
+            default: return 15;
+        }
+    }
+    
+    // 新增：获取对应的end_list
+    const std::vector<int>& get_bar_end_list(Frequency frequency) const {
+        switch (frequency) {
+            case Frequency::F15S: return t15_bar_end_list_;
+            case Frequency::F1MIN: return m1_bar_end_list_;
+            case Frequency::F5MIN: return m5_bar_end_list_;
+            case Frequency::F30MIN: return m30_bar_end_list_;
+            default: return t15_bar_end_list_;
+        }
+    }
+    
+    // 新增：更新指定频率的索引
+    void update_frequency_index(Frequency frequency, int time_value) {
+        auto start_time = std::chrono::high_resolution_clock::now();
+        
+        // 计算时间桶
+        int bucket_index = calculate_time_bucket_index(frequency, time_value);
+        
+        if (bucket_index >= 0) {
+            int& current_idx = get_index_reference(frequency);
+            current_idx = bucket_index;
+            
+            auto total_duration = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start_time);
+            spdlog::debug("[BarSeriesHolder] {} 频率{}索引更新: {} -> 索引{}, 计算耗时:{}μs", 
+                         stock, static_cast<int>(frequency), time_value, bucket_index, total_duration.count());
+        } else {
+            auto total_duration = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start_time);
+            spdlog::warn("[BarSeriesHolder] {} 频率{}时间{}未找到对应时间桶, 计算耗时:{}μs", 
+                        stock, static_cast<int>(frequency), time_value, total_duration.count());
+        }
+    }
+    
+    // 新增：获取索引引用
+    int& get_index_reference(Frequency frequency) {
+        switch (frequency) {
+            case Frequency::F15S: return t15_idx_;
+            case Frequency::F1MIN: return m1_idx_;
+            case Frequency::F5MIN: return m5_idx_;
+            case Frequency::F30MIN: return m30_idx_;
+            default: return t15_idx_;  // 默认返回15秒索引
+        }
+    }
+    
+    // 注意：get_bar_map函数已移除，现在使用calculate_time_bucket_index进行数学计算
+    
+    // 新增：获取频率字符串
+    std::string get_frequency_string(Frequency frequency) const {
+        switch (frequency) {
+            case Frequency::F15S: return "15s";
+            case Frequency::F1MIN: return "1min";
+            case Frequency::F5MIN: return "5min";
+            case Frequency::F30MIN: return "30min";
+            default: return "15s";
+        }
+    }
+    
+    // 新增：获取指定频率的每日桶数
+    int get_bars_per_day(Frequency frequency) const {
+        switch (frequency) {
+            case Frequency::F15S: return 948;
+            case Frequency::F1MIN: return 237;
+            case Frequency::F5MIN: return 48;
+            case Frequency::F30MIN: return 8;
+            default: return 948;
+        }
+    }
+    
+
 };
 
 // Factor基类（PDF 3.4节）
@@ -962,13 +1362,7 @@ protected:
 };
 
 //indicator类
-// 频率类型定义
-enum class Frequency {
-    F15S,   // 15秒
-    F1MIN,  // 1分钟
-    F5MIN,  // 5分钟
-    F30MIN  // 30分钟
-};
+// 频率类型定义（已在前面定义，这里不再重复）
 
 class Indicator {
 protected:
@@ -1016,8 +1410,8 @@ protected:
         }
     }
 
-    // 用unique_ptr自动管理BarSeriesHolder的生命周期
-    std::unordered_map<std::string, std::unique_ptr<BarSeriesHolder>> storage_;
+    // 新增：指向当前股票BarSeriesHolder的指针（用于存储计算结果）
+    BarSeriesHolder* current_bar_holder_ = nullptr;
 
 
 public:
@@ -1061,48 +1455,61 @@ public:
         spdlog::info("[{}] symbol={} bucket[{}]={} value={}", 
                      name_, symbol, bucket_index, time_str, value);
     }
-    // 获取存储结构（供Factor访问）
-    const std::unordered_map<std::string, std::unique_ptr<BarSeriesHolder>>& get_storage()  const {
-        return storage_;
-    }
-
-    // 初始化指标存储（预创建所有股票的BaseSeriesHolder）
-    void init_storage(const std::vector<std::string>& stock_list) {
-        storage_.clear();  // 清空原有存储
-
-        for (const auto& stock : stock_list) {
-            auto holder = std::make_unique<BarSeriesHolder>(stock);
-            try {
-                load_historical_data(stock, *holder);  // 加载该股票的历史数据
-            } catch (const std::exception& e) {
-                spdlog::error("指标[{}]加载{}历史数据失败: {}", name_, stock, e.what());
-            }
-            storage_[stock] = std::move(holder);  // 存入指标自身的storage_
-        }
-
-        spdlog::info("指标[{}]初始化{}只股票的存储", name_, stock_list.size());
-    }
-
-    // 辅助函数：加载单只股票的历史数据（可在子类重写）
-    virtual void load_historical_data(const std::string& stock_code, BarSeriesHolder& holder) {
-        spdlog::debug("指标[{}]暂未实现{}的历史数据加载", name_, stock_code);
-    }
-
     // 新增：状态管理方法
     void mark_as_calculated() const { is_calculated_ = true; }
 
     bool is_calculated() const { return is_calculated_; }
 
     void reset_calculation_status() const { is_calculated_ = false; }
+    
+    // 新增：设置当前股票的BarSeriesHolder（用于存储计算结果）
+    void set_current_bar_holder(BarSeriesHolder* holder) {
+        current_bar_holder_ = holder;
+    }
+    
+    // 新增：获取当前股票的BarSeriesHolder（用于存储计算结果）
+    BarSeriesHolder* get_current_bar_holder() const {
+        return current_bar_holder_;
+    }
+    
+    // 新增：获取指定股票的BarSeriesHolder（线程安全版本）
+    virtual BarSeriesHolder* get_stock_bar_holder(const std::string& stock_code) const = 0;
+    
+    // 新增：存储计算结果到BarSeriesHolder的辅助方法
+    void store_result(const std::string& indicator_name, double value) {
+        spdlog::warn("指标[{}] store_result方法需要股票代码参数，请使用store_result_to_stock", name_);
+    }
+    
+    // 新增：存储计算结果到指定股票的BarSeriesHolder的辅助方法
+    void store_result_to_stock(const std::string& indicator_name, double value, const std::string& stock_code) {
+        BarSeriesHolder* stock_holder = get_stock_bar_holder(stock_code);
+        if (stock_holder != nullptr) {
+            stock_holder->update(frequency_, indicator_name, value);
+            spdlog::debug("指标[{}]存储结果到股票{}成功: {} = {}", name_, stock_code, indicator_name, value);
+        } else {
+            spdlog::warn("指标[{}]无法存储结果到股票{}，BarSeriesHolder为空", name_, stock_code);
+        }
+    }
 
     
     // 修改：尝试计算（增加状态检查）
     void try_calculate(const SyncTickData& sync_tick) {
+        auto start_time = std::chrono::high_resolution_clock::now();
+        
         if (is_calculated_) {
             spdlog::debug("指标[{}]已计算完成，跳过", name_);
             return;
         }
+        
+        // 执行计算（current_bar_holder_由CalculationEngine在调用前设置）
+        auto calc_start = std::chrono::high_resolution_clock::now();
         Calculate(sync_tick);
+        auto calc_end = std::chrono::high_resolution_clock::now();
+        auto calc_duration = std::chrono::duration_cast<std::chrono::microseconds>(calc_end - calc_start);
+        
+        auto total_duration = std::chrono::duration_cast<std::chrono::microseconds>(calc_end - start_time);
+        
+        spdlog::debug("指标[{}] 计算完成: 计算耗时:{}μs, 总耗时:{}μs", name_, calc_duration.count(), total_duration.count());
     }
 
 
@@ -1242,18 +1649,6 @@ public:
         return std::string(time_str);
     }
 
-    // 写入T日数据到storage_
-    void set_bar_series(const std::string& stock, const std::string& indicator_name, const GSeries& series) {
-        auto it = storage_.find(stock);
-        if (it == storage_.end() || !it->second) {
-            // 如果没有对应股票的holder，则新建
-            storage_[stock] = std::make_unique<BarSeriesHolder>(stock);
-            it = storage_.find(stock);
-        }
-        // T日数据使用offline_set_m_bar方法
-        it->second->offline_set_m_bar(indicator_name, series);
-    }
-
     // 获取存储频率字符串
     const std::string& get_storage_frequency_str() const { return storage_frequency_str_; }
 
@@ -1286,7 +1681,8 @@ protected:
     std::string path_;          // 持久化基础路径
     Frequency frequency_ = Frequency::F1MIN;  // 因子频率，可在构造函数中设置
     // 存储结构：key为时间bar索引（如9:35为0），内层key为因子名
-    std::map<int, std::map<std::string, GSeries>> factor_storage;
+    // 注释掉：现在数据存储在CalculationEngine中，不再使用Factor类内部的存储
+    // std::map<int, std::map<std::string, GSeries>> factor_storage;
     // 新增：存储依赖的indicators
     std::vector<const Indicator*> dependent_indicators_;
     // 新增：历史天数配置（由配置注入）
@@ -1344,9 +1740,10 @@ public:
     }
 
     // 设置因子计算结果
-    void set_factor_result(int ti, const GSeries& result) {
-        factor_storage[ti][name_] = result;
-    }
+    // 注释掉：现在数据存储在CalculationEngine中，不再使用Factor类内部的存储
+    // void set_factor_result(int ti, const GSeries& result) {
+    //     factor_storage[ti][name_] = result;
+    // }
 
     // 新增：基于时间戳的因子计算接口（时间戳驱动）
     virtual GSeries definition_with_timestamp(
@@ -1357,6 +1754,17 @@ public:
         // 默认实现：将时间戳转换为ti，然后调用原有的definition方法
         // 这样可以保持向后兼容性
         spdlog::warn("Factor::definition_with_timestamp需要子类重写，当前使用默认的ti转换");
+        return GSeries();
+    }
+
+    // 新增：基于CalculationEngine的因子计算接口（新架构）
+    virtual GSeries definition_with_cal_engine(
+        const std::shared_ptr<CalculationEngine>& cal_engine,
+        const std::vector<std::string>& sorted_stock_list,
+        int ti  // 时间桶索引
+    ) {
+        // 默认实现：返回空结果，需要子类重写
+        spdlog::warn("Factor::definition_with_cal_engine需要子类重写，当前返回空结果");
         return GSeries();
     }
 
@@ -1383,9 +1791,10 @@ public:
     Frequency get_frequency() const { return frequency_; }
     
     // 获取存储结构
-    const std::map<int, std::map<std::string, GSeries>>& get_storage() const {
-        return factor_storage;
-    }
+    // 注释掉：现在数据存储在CalculationEngine中，不再使用Factor类内部的存储
+    // const std::map<int, std::map<std::string, GSeries>>& get_storage() const {
+    //     return factor_storage;
+    // }
     
     // 设置依赖的indicators
     void set_dependent_indicators(const std::vector<const Indicator*>& indicators) {

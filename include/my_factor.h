@@ -1,6 +1,8 @@
 #pragma once
 #include "data_structures.h"
 #include "indicator_storage_helper.h"
+// 前向声明，避免循环包含
+class CalculationEngine;
 #include <unordered_map>
 #include <vector>
 #include <string>
@@ -18,6 +20,13 @@ public:
     // 实现Factor的definition函数
     GSeries definition(
         const std::unordered_map<std::string, BarSeriesHolder*>& barRunner,
+        const std::vector<std::string>& sorted_stock_list,
+        int ti
+    ) override;
+
+    // 新增：支持CalculationEngine的definition函数
+    GSeries definition_with_cal_engine(
+        const std::shared_ptr<CalculationEngine>& cal_engine,
         const std::vector<std::string>& sorted_stock_list,
         int ti
     ) override;
@@ -52,6 +61,13 @@ public:
     // 原有的定义方法 - 修复参数类型
     GSeries definition(
         const std::unordered_map<std::string, BarSeriesHolder*>& bar_runners,
+        const std::vector<std::string>& sorted_stock_list,
+        int ti
+    ) override;
+
+    // 新增：支持CalculationEngine的definition函数
+    GSeries definition_with_cal_engine(
+        const std::shared_ptr<CalculationEngine>& cal_engine,
         const std::vector<std::string>& sorted_stock_list,
         int ti
     ) override;

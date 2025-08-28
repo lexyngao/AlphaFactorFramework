@@ -174,3 +174,4 @@ void IncreaseMedian::clear() {
     while (!p.empty()) p.pop();
     while (!q.empty()) q.pop();
 }
+

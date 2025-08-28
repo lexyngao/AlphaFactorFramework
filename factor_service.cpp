@@ -52,7 +52,7 @@ int main() {
         spdlog::info("生成了 {} 个时间事件", time_points.size());
         
         // 运行Factor计算引擎
-        framework.get_engine().process_factor_time_events(time_points);
+        framework.get_engine()->process_factor_time_events(time_points);
         
         // 7. 保存Factor结果
         spdlog::info("开始保存Factor结果...");

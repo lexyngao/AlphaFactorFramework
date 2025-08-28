@@ -1,5 +1,6 @@
 #include "diff_indicator.h"
 #include "data_structures.h"
+#include "cal_engine.h"  // 新增：包含完整的CalculationEngine定义
 #include <thread>
 #include <sstream>
 #include <fstream>
@@ -15,6 +16,7 @@ void DiffIndicator::setup_default_fields() {
     DiffFieldConfig volume_config;
     volume_config.field_name = "volume";
     volume_config.output_key = "volume";
+//    volume_config.output_key = fmt::format("{}.{}.{}", storage_frequency_str_, "volume", pre_days_);
     volume_config.getter = [](const TickData& tick) -> double { return tick.volume; };
     volume_config.description = "成交量差分";
     add_diff_field(volume_config);
@@ -23,6 +25,7 @@ void DiffIndicator::setup_default_fields() {
     DiffFieldConfig amount_config;
     amount_config.field_name = "amount";
     amount_config.output_key = "amount";
+//    amount_config.output_key = fmt::format("{}.{}.{}", storage_frequency_str_, "amount", pre_days_);
     amount_config.getter = [](const TickData& tick) -> double { return tick.total_value_traded; };
     amount_config.description = "成交额差分";
     add_diff_field(amount_config);
@@ -31,10 +34,7 @@ void DiffIndicator::setup_default_fields() {
 void DiffIndicator::add_diff_field(const DiffFieldConfig& config) {
     diff_fields_.push_back(config);
     
-    // 为每个字段初始化互斥锁
-    if (cache_mutexes_.find(config.field_name) == cache_mutexes_.end()) {
-        cache_mutexes_.emplace(config.field_name, std::make_unique<std::mutex>());
-    }
+    // 方案2：不再需要cache和mutex，因为已经移除cache依赖
     
     spdlog::info("[DiffIndicator] 添加差分字段: {} ({})", config.field_name, config.description);
 }
@@ -47,10 +47,10 @@ void DiffIndicator::Calculate(const SyncTickData& tick_data) {
 
     spdlog::info("[DiffCalculate-Enter] symbol={} thread_id={}", tick_data.symbol, thread_id_str);
 
-    // 检查存储空间是否存在
-    auto it = storage_.find(tick_data.symbol);
-    if (it == storage_.end()) {
-        spdlog::warn("[DiffCalculate] symbol={} not found in storage_ (thread_id={})", tick_data.symbol, thread_id_str);
+    // 修改：使用新的get_stock_bar_holder方法获取对应股票的BarSeriesHolder
+    BarSeriesHolder* stock_holder = get_stock_bar_holder(tick_data.symbol);
+    if (!stock_holder) {
+        spdlog::warn("[DiffIndicator] 无法获取股票{}的BarSeriesHolder", tick_data.symbol);
         return;
     }
 
@@ -66,18 +66,23 @@ void DiffIndicator::Calculate(const SyncTickData& tick_data) {
         double field_diff = calculate_field_diff(field_name, tick_data.symbol, 
                                                tick_data.tick_data.real_time, current_value);
         
-        // 使用 IndicatorStorageHelper 存储数据
-        // 这样就不需要手动计算时间桶索引和手动操作存储了
-        IndicatorStorageHelper::store_value(
-            this,                           // Indicator 实例
-            tick_data.symbol,               // 股票代码
-            output_key,                     // 输出键名（如 "volume_diff", "amount_diff"）
-            field_diff,                     // 差分值
-            tick_data.tick_data.real_time  // 时间戳
-        );
+        // 获取当前频率的时间桶索引（使用对应股票的BarSeriesHolder的内部索引）
+        int time_bucket_index = stock_holder->get_idx(frequency_);
+        if (time_bucket_index < 0) {
+            spdlog::warn("[DiffIndicator] 频率{}的索引无效: {}", 
+                         static_cast<int>(frequency_), time_bucket_index);
+            continue;
+        }
         
-        spdlog::debug("[DiffCalculate] symbol={} {}_diff={} 已通过 IndicatorStorageHelper 存储 (thread_id={})", 
-                     tick_data.symbol, output_key, field_diff, thread_id_str);
+        // 获取当前时间桶的累积差值并累加新的差值
+        double accumulated_diff = get_accumulated_diff_by_bucket(output_key, tick_data.symbol, time_bucket_index, stock_holder);
+        double new_accumulated_diff = accumulated_diff + field_diff;
+        
+        // 使用新的store_result_to_stock方法存储累积差值到指定股票的BarSeriesHolder
+        store_result_to_stock(output_key, new_accumulated_diff, tick_data.symbol);
+        
+        spdlog::debug("[DiffCalculate] symbol={} bucket={} {}_diff={} accumulated_diff={} -> new_accumulated_diff={} (thread_id={})", 
+                     tick_data.symbol, time_bucket_index, output_key, field_diff, accumulated_diff, new_accumulated_diff, thread_id_str);
     }
 }
 
@@ -85,54 +90,57 @@ double DiffIndicator::calculate_field_diff(const std::string& field_name,
                                          const std::string& stock_code,
                                          uint64_t current_time,
                                          double current_value) {
-    std::lock_guard<std::mutex> lock(*cache_mutexes_[field_name]);
+    // 方案B：从简单的成员变量获取前一个tick的TotalValueTraded，完全移除cache依赖
     
-    // 获取该股票该字段的时间序列缓存
-    auto& stock_series = time_series_caches_[field_name][stock_code];
+    // 获取前一个tick的TotalValueTraded
+    double prev_total = get_previous_tick_total_value(field_name, stock_code);
     
-    // 查找前一个时间戳的累积值
-    double prev_value = 0.0;
-    auto it = stock_series.lower_bound(current_time);
-    if (it != stock_series.begin()) {
-        --it;  // 前一个时间戳
-        prev_value = it->second;
-        spdlog::debug("[DiffCalculate] symbol={} field={} found prev_value={} at time={}", 
-                     stock_code, field_name, prev_value, it->first);
-    } else {
-        spdlog::debug("[DiffCalculate] symbol={} field={} first tick, setting prev_value=0", 
-                     stock_code, field_name);
-    }
+    // 计算真正的diff：当前TotalValueTraded - 前一个tick的TotalValueTraded
+    double field_diff = current_value - prev_total;
     
-    // 计算差分
-    double field_diff = current_value - prev_value;
+    // 更新前一个tick的值，为下一个tick做准备
+    prev_tick_values_[field_name][stock_code] = current_value;
     
-    // 存储当前时间戳的累积值
-    stock_series[current_time] = current_value;
-    
-    spdlog::debug("[DiffCalculate] symbol={} field={} time={} diff: {} - {} = {}", 
-                 stock_code, field_name, current_time, current_value, prev_value, field_diff);
+    spdlog::debug("[DiffCalculate] symbol={} field={} current_value={} prev_total={} diff={}", 
+                 stock_code, field_name, current_value, prev_total, field_diff);
     
     return field_diff;
 }
 
 BarSeriesHolder* DiffIndicator::get_field_bar_series_holder(const std::string& stock_code, const std::string& field_name) const {
-    auto it = storage_.find(stock_code);
-    if (it != storage_.end()) {
-        return it->second.get();
+    // 现在从current_bar_holder_获取，或者返回nullptr
+    // 这个方法在新的架构中可能不再需要，因为数据直接从BarSeriesHolder获取
+    return current_bar_holder_;
+}
+
+BarSeriesHolder* DiffIndicator::get_stock_bar_holder(const std::string& stock_code) const {
+    // 实现获取指定股票BarSeriesHolder的虚函数
+    if (!calculation_engine_) {
+        spdlog::warn("[DiffIndicator] calculation_engine_为空，无法获取股票{}的BarSeriesHolder", stock_code);
+        return nullptr;
     }
-    return nullptr;
+    
+    // 从CalculationEngine获取指定股票的BarSeriesHolder
+    BarSeriesHolder* stock_holder = calculation_engine_->get_stock_bar_holder(stock_code);
+    if (!stock_holder) {
+        spdlog::warn("[DiffIndicator] 无法从CalculationEngine获取股票{}的BarSeriesHolder", stock_code);
+    }
+    
+    return stock_holder;
+}
+
+void DiffIndicator::set_calculation_engine(std::shared_ptr<CalculationEngine> engine) {
+    calculation_engine_ = engine;
+    spdlog::info("[DiffIndicator] 已设置CalculationEngine引用");
 }
 
 void DiffIndicator::reset_diff_storage() {
-    for (const auto& field_config : diff_fields_) {
-        const std::string& field_name = field_config.field_name;
-        std::lock_guard<std::mutex> lock(*cache_mutexes_[field_name]);
-        time_series_caches_[field_name].clear();
-        spdlog::info("[DiffIndicator] 重置{}时间序列缓存", field_name);
-    }
+    // 方案B：清理前一个tick的值
+    prev_tick_values_.clear();
+    spdlog::info("[DiffIndicator] 已清理前一个tick的值");
 }
 
-bool DiffIndicator::save_results(const ModuleConfig& module, const std::string& date) {
+bool DiffIndicator::save_results(const ModuleConfig& module, const std::string& date, const std::shared_ptr<CalculationEngine>& cal_engine) {
     try {
         // 1. 验证参数有效性
         if (module.handler != "Indicator") {
@@ -158,92 +166,77 @@ bool DiffIndicator::save_results(const ModuleConfig& module, const std::string& 
             return false;
         }
 
-        // 3. 从Indicator的storage_中收集数据
-        const auto& indicator_storage = get_storage();
-        if (indicator_storage.empty()) {
-            spdlog::warn("指标[{}]的storage_为空，无数据可保存", module.name);
+        // 4. 在新的架构中，数据存储在CalculationEngine的BarSeriesHolder中
+        // 从CalculationEngine获取数据并保存
+        if (!cal_engine) {
+            spdlog::error("CalculationEngine为空，无法获取数据");
+            return false;
+        }
+
+        // 获取所有股票的BarSeriesHolder
+        auto all_bar_holders = cal_engine->get_all_bar_series_holders();
+        if (all_bar_holders.empty()) {
+            spdlog::warn("没有找到任何BarSeriesHolder，无数据可保存");
             return true;
         }
 
-        // 提取指标实际处理过的股票列表
-        std::vector<std::string> stock_list;
-        for (const auto& [stock_code, _] : indicator_storage) {
-            stock_list.push_back(stock_code);
-        }
-
-        // 4. 为每个配置的字段分别保存数据
+        // 为每个字段分别进行聚合和保存
         for (const auto& field_config : diff_fields_) {
-            const std::string& field_name = field_config.field_name;
             const std::string& output_key = field_config.output_key;
-            
-            // 按bar_index分组收集数据
-            std::map<int, std::map<std::string, double>> bar_data;
-            int max_bar_index = -1;
 
-            int bars_per_day = get_bars_per_day();
-            for (const auto& [stock_code, holder_ptr] : indicator_storage) {
-                if (!holder_ptr) {
-                    spdlog::warn("DiffIndicator[{}]的股票[{}]holder为空，跳过", module.name, stock_code);
-                    continue;
-                }
+            // 收集聚合后的数据
+            std::map<int, std::map<std::string, double>> aggregated_data;
+            
+            // 从CalculationEngine获取数据并处理
+            for (const auto& [stock_code, holder_ptr] : all_bar_holders) {
+                if (!holder_ptr) continue;
                 
                 const BarSeriesHolder* holder = holder_ptr.get();
-                if (!holder) {
-                    spdlog::warn("DiffIndicator[{}]的股票[{}]holder指针为空，跳过", module.name, stock_code);
-                    continue;
-                }
+                GSeries base_series = holder->get_m_bar(fmt::format("{}.{}.{}", storage_frequency_str_, output_key, pre_days_));
                 
-                GSeries series = holder->get_m_bar(output_key);
-                
-                // 检查series是否有效
-                if (series.get_size() == 0) {
-                    spdlog::warn("DiffIndicator[{}]的股票[{}]键[{}]数据为空，跳过", module.name, stock_code, output_key);
-                    continue;
-                }
-                
-                if (series.get_size() < bars_per_day) {
-                    series.resize(bars_per_day);
-                }
-                
-                for (int ti = 0; ti < bars_per_day; ++ti) {
-                    double value = series.get(ti);
-                    bar_data[ti][stock_code] = value;
-                    if (ti > max_bar_index) max_bar_index = ti;
+                // 保存所有时间桶的数据
+                for (int i = 0; i < base_series.get_size(); ++i) {
+                    double val = base_series.get(i);
+                    if (!std::isnan(val)) {
+                        aggregated_data[i][stock_code] = val;
+                    }
                 }
             }
 
-            if (bar_data.empty()) {
-                spdlog::warn("指标[{}]的{}数据为空，跳过保存", module.name, output_key);
-                continue;
-            }
-
-            // 5. 生成GZ压缩文件
+            // 生成GZ压缩文件
             std::string filename = fmt::format("{}_{}_{}_{}.csv.gz",
                                                module.name, output_key, date, storage_frequency_str_);
             fs::path file_path = base_path / filename;
 
-            // 6. 写入GZ文件
+            // 写入GZ文件
             gzFile gz_file = gzopen(file_path.string().c_str(), "wb");
             if (!gz_file) {
                 spdlog::error("无法创建GZ文件: {}", file_path.string());
                 return false;
             }
 
-            // 6.1 写入表头
+            // 写入表头
             std::string header = "bar_index";
-            for (const auto& stock_code : stock_list) {
+            for (const auto& [stock_code, _] : all_bar_holders) {
                 header += "," + stock_code;
             }
             header += "\n";
             gzwrite(gz_file, header.data(), header.size());
 
-            // 6.2 按bar_index写入每行数据
-            for (int ti = 0; ti <= max_bar_index; ++ti) {
+            // 写入数据
+            // 确定有多少个时间桶
+            int max_time_bucket = -1;
+            for (const auto& [ti, _] : aggregated_data) {
+                if (ti > max_time_bucket) max_time_bucket = ti;
+            }
+            
+            // 写入所有时间桶的数据
+            for (int ti = 0; ti <= max_time_bucket; ++ti) {
                 std::string line = std::to_string(ti);
 
-                for (const auto& stock_code : stock_list) {
-                    auto bar_it = bar_data.find(ti);
-                    if (bar_it != bar_data.end()) {
+                for (const auto& [stock_code, _] : all_bar_holders) {
+                    auto bar_it = aggregated_data.find(ti);
+                    if (bar_it != aggregated_data.end()) {
                         auto stock_it = bar_it->second.find(stock_code);
                         if (stock_it != bar_it->second.end()) {
                             double value = stock_it->second;
@@ -264,12 +257,10 @@ bool DiffIndicator::save_results(const ModuleConfig& module, const std::string& 
             }
 
             gzclose(gz_file);
-            spdlog::info("指标[{}]的{}数据保存成功：{}（{}个时间桶，{}只股票）",
-                         module.name, output_key, file_path.string(), max_bar_index + 1, stock_list.size());
+            spdlog::info("聚合数据保存成功：{}", file_path.string());
         }
 
         return true;
-
     } catch (const std::exception& e) {
         spdlog::error("保存指标[{}]失败：{}", module.name, e.what());
         return false;
@@ -300,48 +291,10 @@ bool DiffIndicator::aggregate(const std::string& target_frequency,std::map<int, 
         // Clear output parameter first
         aggregated_data.clear();
 
-        // 提取股票列表
-        const auto& indicator_storage = get_storage();
-        std::vector<std::string> stock_list;
-        for (const auto& [stock_code, _] : indicator_storage) {
-            stock_list.push_back(stock_code);
-        }
-
-        // 为每个字段分别进行聚合和保存
-        for (const auto& field_config : diff_fields_) {
-            const std::string& output_key = field_config.output_key;
-
-
-            for (const auto& [stock_code, holder_ptr] : indicator_storage) {
-                if (!holder_ptr) continue;
-
-                const BarSeriesHolder* holder = holder_ptr.get();
-                GSeries base_series = holder->get_m_bar(output_key);
-                GSeries output_series(target_bars);
-
-                // 处理上午时段：bucket 0-479 -> 上午桶
-                int morning_base_buckets = 120 * 4;  // 480个15S桶
-                int morning_target_buckets;
-                if (target_frequency == "1min") morning_target_buckets = 120;
-                else if (target_frequency == "5min") morning_target_buckets = 24;
-                else if (target_frequency == "30min") morning_target_buckets = 4;
-
-                aggregate_time_segment(base_series, output_series, 0, morning_base_buckets - 1, ratio, 0);
-
-                // 处理下午时段：bucket 480-947 -> 下午桶
-                int afternoon_base_start = 480;
-                int afternoon_base_end = 947;
-                aggregate_time_segment(base_series, output_series, afternoon_base_start, afternoon_base_end, ratio, morning_target_buckets);
-
-                // 将聚合结果存储到数据结构中
-                for (int ti = 0; ti < target_bars; ++ti) {
-                    double value = output_series.get(ti);
-                    aggregated_data[ti][stock_code] = value;
-                }
-            }
-        }
-
-        return true;
+        // 在新的架构中，数据存储在CalculationEngine的BarSeriesHolder中
+        // 这个方法现在需要从外部传入数据，或者暂时返回false
+        spdlog::warn("DiffIndicator::aggregate: 新架构中需要从外部获取数据");
+        return false;
 
     } catch (const std::exception& e) {
         spdlog::error("聚合失败：{}", e.what());
@@ -377,98 +330,10 @@ bool DiffIndicator::save_results_with_frequency(const ModuleConfig& module, cons
         
         spdlog::info("开始聚合：{} -> {}，聚合比率: {}，目标桶数: {}", base_freq, target_frequency, ratio, target_bars);
 
-        // 提取股票列表
-        const auto& indicator_storage = get_storage();
-        std::vector<std::string> stock_list;
-        for (const auto& [stock_code, _] : indicator_storage) {
-            stock_list.push_back(stock_code);
-        }
-
-        // 为每个字段分别进行聚合和保存
-        for (const auto& field_config : diff_fields_) {
-            const std::string& output_key = field_config.output_key;
-            
-            // 收集聚合后的数据
-            std::map<int, std::map<std::string, double>> aggregated_data;
-            
-            for (const auto& [stock_code, holder_ptr] : indicator_storage) {
-                if (!holder_ptr) continue;
-                
-                const BarSeriesHolder* holder = holder_ptr.get();
-                GSeries base_series = holder->get_m_bar(output_key);
-                GSeries output_series(target_bars);
-                
-                // 处理上午时段：bucket 0-479 -> 上午桶
-                int morning_base_buckets = 120 * 4;  // 480个15S桶
-                int morning_target_buckets;
-                if (target_frequency == "1min") morning_target_buckets = 120;
-                else if (target_frequency == "5min") morning_target_buckets = 24;
-                else if (target_frequency == "30min") morning_target_buckets = 4;
-                
-                aggregate_time_segment(base_series, output_series, 0, morning_base_buckets - 1, ratio, 0);
-                
-                // 处理下午时段：bucket 480-947 -> 下午桶
-                int afternoon_base_start = 480;
-                int afternoon_base_end = 947;
-                aggregate_time_segment(base_series, output_series, afternoon_base_start, afternoon_base_end, ratio, morning_target_buckets);
-                
-                // 将聚合结果存储到数据结构中
-                for (int ti = 0; ti < target_bars; ++ti) {
-                    double value = output_series.get(ti);
-                    aggregated_data[ti][stock_code] = value;
-                }
-            }
-
-            // 生成GZ压缩文件
-            std::string filename = fmt::format("{}_{}_{}_{}.csv.gz",
-                                               module.name, output_key, date, target_frequency);
-            fs::path file_path = base_path / filename;
-
-            // 写入GZ文件
-            gzFile gz_file = gzopen(file_path.string().c_str(), "wb");
-            if (!gz_file) {
-                spdlog::error("无法创建GZ文件: {}", file_path.string());
-                return false;
-            }
-
-            // 写入表头
-            std::string header = "bar_index";
-            for (const auto& stock_code : stock_list) {
-                header += "," + stock_code;
-            }
-            header += "\n";
-            gzwrite(gz_file, header.data(), header.size());
-
-            // 写入数据
-            for (int ti = 0; ti < target_bars; ++ti) {
-                std::string line = std::to_string(ti);
-
-
-                for (const auto& stock_code : stock_list) {
-                    auto bar_it = aggregated_data.find(ti);
-                    if (bar_it != aggregated_data.end()) {
-                        auto stock_it = bar_it->second.find(stock_code);
-                        if (stock_it != bar_it->second.end()) {
-                            double value = stock_it->second;
-                            if (std::isnan(value)) {
-                                line += ",";
-                            } else {
-                                line += fmt::format(",{:.6f}", value);
-                            }
-                        } else {
-                            line += ",";
-                        }
-                    } else {
-                        line += ",";
-                    }
-                }
-                line += "\n";
-                gzwrite(gz_file, line.data(), line.size());
-            }
-
-            gzclose(gz_file);
-            spdlog::info("聚合数据保存成功：{}", file_path.string());
-        }
+        // 在新的架构中，数据存储在CalculationEngine的BarSeriesHolder中
+        // 这个方法现在需要从外部传入数据，或者暂时返回false
+        spdlog::warn("DiffIndicator::aggregate: 新架构中需要从外部获取数据");
+        return false;
 
         return true;
 
@@ -546,4 +411,58 @@ void DiffIndicator::aggregate_time_segment(const GSeries& base_series, GSeries& 
                          output_start + output_buckets, valid_count, sum);
         }
     }
-} 
+}
+
+
+
+double DiffIndicator::get_accumulated_diff_by_bucket(const std::string& field_name, 
+                                                    const std::string& stock_code,
+                                                    int time_bucket_index,
+                                                    BarSeriesHolder* stock_holder) {
+    // 从指定股票的BarSeriesHolder获取指定时间桶的累积差值
+    if (!stock_holder) {
+        spdlog::warn("[DiffIndicator] stock_holder为空，无法获取累积差值");
+        return 0.0;
+    }
+    
+    // 从BarSeriesHolder获取该时间桶的当前值
+    std::string series_key = fmt::format("{}.{}.{}", storage_frequency_str_, field_name, pre_days_);
+    GSeries series = stock_holder->get_m_bar(series_key);
+    
+    if (time_bucket_index >= series.get_size()) {
+        spdlog::warn("[DiffIndicator] 时间桶索引超出范围: index={}, size={}", time_bucket_index, series.get_size());
+        return 0.0;
+    }
+    
+    double current_value = series.get(time_bucket_index);
+    
+    // 如果当前值不是NaN，返回它；否则返回0.0
+    if (std::isnan(current_value)) {
+        spdlog::debug("[DiffIndicator] 时间桶{}的累积差值为NaN，返回0.0", time_bucket_index);
+        return 0.0;
+    }
+    
+    spdlog::debug("[DiffIndicator] 通过索引获取时间桶{}的累积差值: {}", time_bucket_index, current_value);
+    return current_value;
+}
+
+double DiffIndicator::get_previous_tick_total_value(const std::string& field_name, 
+                                                   const std::string& stock_code) {
+    // 方案B：从简单的成员变量获取前一个tick的TotalValueTraded
+    
+    auto field_it = prev_tick_values_.find(field_name);
+    if (field_it != prev_tick_values_.end()) {
+        auto stock_it = field_it->second.find(stock_code);
+        if (stock_it != field_it->second.end()) {
+            double prev_value = stock_it->second;
+            spdlog::debug("[DiffIndicator] 获取前一个tick的TotalValueTraded: field={}, stock={}, value={}", 
+                         field_name, stock_code, prev_value);
+            return prev_value;
+        }
+    }
+    
+    // 如果没有找到前一个tick的值，返回0（表示这是第一个tick）
+    spdlog::debug("[DiffIndicator] 没有找到前一个tick的TotalValueTraded: field={}, stock={}, 返回0", 
+                 field_name, stock_code);
+    return 0.0;
+}

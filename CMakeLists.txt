@@ -82,3 +82,20 @@ add_executable(SharedMemoryService shared_memory_service.cpp
 
 target_link_libraries(SharedMemoryService PRIVATE ZLIB::ZLIB curl)
 set_property(TARGET SharedMemoryService PROPERTY CXX_STANDARD 17)
+
+# 时间映射调试程序
+add_executable(debug_time_mapping examples/debug_time_mapping.cpp
+        src/config_loader.cpp
+        src/data_loader.cpp
+        src/calculation_engine.cpp
+        src/result_storage.cpp
+        src/tinyxml2.cpp
+        src/tz.cpp
+        src/my_indicator.cpp
+        src/my_factor.cpp
+        src/diff_indicator.cpp
+        src/gseries_impl.cpp
+        src/indicator_storage_helper.cpp)
+
+target_link_libraries(debug_time_mapping PRIVATE ZLIB::ZLIB curl)
+set_property(TARGET debug_time_mapping PROPERTY CXX_STANDARD 17)

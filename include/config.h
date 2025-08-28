@@ -20,7 +20,7 @@ struct ModuleConfig {
 
 // 全局配置（PDF 1.2节）
 struct GlobalConfig {
-    std::string calculate_date = "20240701";   // 计算日期（如20240701）
+    std::string calculate_date = "20240701.csv";   // 计算日期（如20240701）
     std::string stock_universe;   // 股票池名称（如1800）
     int pre_days;             // 提前加载的Indicator天数（如5）
     std::vector<ModuleConfig> modules;  // 所有模块配置

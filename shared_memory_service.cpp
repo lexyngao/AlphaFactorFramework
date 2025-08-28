@@ -33,7 +33,9 @@ public:
         
         try {
             // 1. 同时启动Indicator和Factor线程组
-            start_both_thread_groups();
+            // start_both_thread_groups();
+            // 分阶段模拟同时启动Indicator和Factor线程组
+            start_staged_thread_groups();
             
             // 2. 等待两个线程组完成
             wait_for_completion();
@@ -73,7 +75,7 @@ private:
         std::vector<MarketAllField> all_tick_datas = framework_.load_and_sort_market_data(data_loader);
         
         // 重置所有指标的计算状态和差分存储
-        framework_.get_engine().reset_diff_storage();
+        framework_.get_engine()->reset_diff_storage();
         
         // 按股票分组处理行情数据
         std::unordered_map<std::string, std::vector<MarketAllField>> stock_data_map;
@@ -90,7 +92,7 @@ private:
                 spdlog::info("Indicator线程开始处理股票{}的行情数据，共{}条", stock_code, data.size());
                 
                 for (const auto& tick_data : data) {
-                    framework_.get_engine().update(tick_data);
+                    framework_.get_engine()->update(tick_data);
                 }
                 
                 spdlog::info("Indicator线程完成股票{}的处理", stock_code);
@@ -127,6 +129,28 @@ private:
         
         spdlog::info("两个线程组都已启动完成");
     }
+
+    void start_staged_thread_groups() {
+        spdlog::info("分阶段启动线程组...");
+        
+        // 第一阶段：启动Indicator线程组
+        indicator_running_ = true;
+        std::thread indicator_thread(&SharedMemoryService::start_indicator_threads, this);
+        
+        // 等待Indicator运行一段时间，积累数据
+        spdlog::info("等待Indicator积累数据...");
+        std::this_thread::sleep_for(std::chrono::seconds(90));  // 可配置的等待时间
+        
+        // 第二阶段：启动Factor线程组
+        factor_running_ = true;
+        std::thread factor_thread(&SharedMemoryService::start_factor_threads_sync, this);
+        
+        // 等待两个线程组完成
+        indicator_thread.join();
+        factor_thread.join();
+        
+        spdlog::info("所有线程组完成");
+    }
     
     // 新增：Factor线程组的同步运行版本
     void start_factor_threads_sync() {
@@ -138,7 +162,7 @@ private:
         spdlog::info("生成了 {} 个时间事件", time_points.size());
         
         // 运行Factor计算引擎（持续运行，直到所有时间事件处理完）
-        framework_.get_engine().process_factor_time_events_sync(time_points);
+        framework_.get_engine()->process_factor_time_events_sync(time_points);
         
         factor_running_ = false;
         spdlog::info("Factor线程组完成");
@@ -148,7 +172,7 @@ private:
         spdlog::info("等待所有计算任务完成...");
         
         // 等待引擎完成所有计算
-        framework_.get_engine().wait_for_completion();
+        framework_.get_engine()->wait_for_completion();
         
         spdlog::info("所有计算任务已完成");
     }
@@ -162,13 +186,13 @@ private:
 
 int main() {
     // 1. 初始化日志
-    auto file_logger = spdlog::basic_logger_mt("shared_memory_service", "shared_memory_service.log", true);
+    auto file_logger = spdlog::basic_logger_mt("shared_memory_service", "shared_memory_service_0827_indicator_first.log", true);
     file_logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%n] [%l] %v");
     file_logger->set_level(spdlog::level::debug);
     file_logger->flush_on(spdlog::level::debug);
     spdlog::set_default_logger(file_logger);
     spdlog::set_level(spdlog::level::debug);
-    spdlog::info("=== 启动共享内存服务 ===");
+    spdlog::info("=== 启动新共享内存服务 ===");
 
     try {
         // 2. 加载配置

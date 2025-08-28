@@ -3,6 +3,7 @@
 //
 #include "my_indicator.h"
 #include "data_structures.h"
+#include "cal_engine.h"  // 包含CalculationEngine完整定义
 #include <thread>
 #include <sstream>
 #include "spdlog/spdlog.h"
@@ -19,12 +20,12 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
 
     spdlog::info("[Calculate-Enter] symbol={} thread_id={}", tick_data.symbol, thread_id_str);
 
-    auto it = storage_.find(tick_data.symbol);
-    if (it == storage_.end()) {
-        spdlog::warn("[Calculate] symbol={} not found in storage_ (thread_id={})", tick_data.symbol, thread_id_str);
+    // 使用新的架构：从get_stock_bar_holder获取指定股票的BarSeriesHolder
+    BarSeriesHolder* holder = get_stock_bar_holder(tick_data.symbol);
+    if (!holder) {
+        spdlog::warn("[Calculate] symbol={} 无法获取股票{}的BarSeriesHolder (thread_id={})", tick_data.symbol, tick_data.symbol, thread_id_str);
         return;
     }
-    BarSeriesHolder* holder = it->second.get();
 
     int ti = get_time_bucket_index(tick_data.tick_data.real_time);
     spdlog::debug("[Calculate] symbol={} real_time={} ti={} (thread_id={})", 
@@ -97,8 +98,8 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
     spdlog::debug("[Calculate] symbol={} ti={} bar_index={} volume_diff={} (thread_id={})", 
                  tick_data.symbol, ti, bar_index, volume_diff, thread_id_str);
 
-    series.set(bar_index, volume_diff);
-    holder->offline_set_m_bar(key, series);
+    // 使用新的架构：通过store_result_to_stock方法存储数据到指定股票
+    store_result_to_stock("volume", volume_diff, tick_data.symbol);
     
     // 输出时间桶信息
     log_time_bucket_info(tick_data.symbol, bar_index, volume_diff);
@@ -107,11 +108,29 @@ void VolumeIndicator::Calculate(const SyncTickData& tick_data) {
 }
 
 BarSeriesHolder* VolumeIndicator::get_bar_series_holder(const std::string& stock_code) const {
-    auto it = storage_.find(stock_code);
-    if (it != storage_.end()) {
-        return it->second.get();  // 返回unique_ptr管理的原始指针
+    // 使用新的架构：返回current_bar_holder_
+    return get_current_bar_holder();
+}
+
+BarSeriesHolder* VolumeIndicator::get_stock_bar_holder(const std::string& stock_code) const {
+    // 实现获取指定股票BarSeriesHolder的纯虚函数
+    if (!calculation_engine_) {
+        spdlog::warn("[VolumeIndicator] calculation_engine_为空，无法获取股票{}的BarSeriesHolder", stock_code);
+        return nullptr;
     }
-    return nullptr;
+    
+    // 从CalculationEngine获取指定股票的BarSeriesHolder
+    BarSeriesHolder* stock_holder = calculation_engine_->get_stock_bar_holder(stock_code);
+    if (!stock_holder) {
+        spdlog::warn("[VolumeIndicator] 无法从CalculationEngine获取股票{}的BarSeriesHolder", stock_code);
+    }
+    
+    return stock_holder;
+}
+
+void VolumeIndicator::set_calculation_engine(std::shared_ptr<CalculationEngine> engine) {
+    calculation_engine_ = engine;
+    spdlog::info("[VolumeIndicator] 已设置CalculationEngine引用");
 }
 
 void VolumeIndicator::reset_diff_storage() {
@@ -127,14 +146,14 @@ void AmountIndicator::Calculate(const SyncTickData& tick_data) {
     oss << thread_id;
     std::string thread_id_str = oss.str();
 
-    spdlog::info("[Calculate-Enter] symbol={} thread_id={}", tick_data.symbol, thread_id_str);
+    spdlog::info("[Calculate-Enter] symbol={} symbol={} thread_id={}", tick_data.symbol, thread_id_str);
 
-    auto it = storage_.find(tick_data.symbol);
-    if (it == storage_.end()) {
-        spdlog::warn("[Calculate] symbol={} not found in storage_ (thread_id={})", tick_data.symbol, thread_id_str);
+    // 使用新的架构：从get_stock_bar_holder获取指定股票的BarSeriesHolder
+    BarSeriesHolder* holder = get_stock_bar_holder(tick_data.symbol);
+    if (!holder) {
+        spdlog::warn("[Calculate] symbol={} 无法获取股票{}的BarSeriesHolder (thread_id={})", tick_data.symbol, tick_data.symbol, thread_id_str);
         return;
     }
-    BarSeriesHolder* holder = it->second.get();
 
     int ti = get_time_bucket_index(tick_data.tick_data.real_time);
     if (ti < 0) {
@@ -207,8 +226,8 @@ void AmountIndicator::Calculate(const SyncTickData& tick_data) {
     spdlog::debug("[Calculate] symbol={} ti={} bar_index={} amount_diff={} (thread_id={})", 
                  tick_data.symbol, ti, bar_index, amount_diff, thread_id_str);
 
-    series.set(bar_index, amount_diff);
-    holder->offline_set_m_bar(key, series);
+    // 使用新的架构：通过store_result_to_stock方法存储数据到指定股票
+    store_result_to_stock("amount", amount_diff, tick_data.symbol);
     
     // 输出时间桶信息
     log_time_bucket_info(tick_data.symbol, bar_index, amount_diff);
@@ -217,11 +236,29 @@ void AmountIndicator::Calculate(const SyncTickData& tick_data) {
 }
 
 BarSeriesHolder* AmountIndicator::get_bar_series_holder(const std::string& stock_code) const {
-    auto it = storage_.find(stock_code);
-    if (it != storage_.end()) {
-        return it->second.get();  // 返回unique_ptr管理的原始指针
+    // 使用新的架构：返回current_bar_holder_
+    return get_current_bar_holder();
+}
+
+BarSeriesHolder* AmountIndicator::get_stock_bar_holder(const std::string& stock_code) const {
+    // 实现获取指定股票BarSeriesHolder的纯虚函数
+    if (!calculation_engine_) {
+        spdlog::warn("[AmountIndicator] calculation_engine_为空，无法获取股票{}的BarSeriesHolder", stock_code);
+        return nullptr;
     }
-    return nullptr;
+    
+    // 从CalculationEngine获取指定股票的BarSeriesHolder
+    BarSeriesHolder* stock_holder = calculation_engine_->get_stock_bar_holder(stock_code);
+    if (!stock_holder) {
+        spdlog::warn("[AmountIndicator] 无法从CalculationEngine获取股票{}的BarSeriesHolder", stock_code);
+    }
+    
+    return stock_holder;
+}
+
+void AmountIndicator::set_calculation_engine(std::shared_ptr<CalculationEngine> engine) {
+    calculation_engine_ = engine;
+    spdlog::info("[AmountIndicator] 已设置CalculationEngine引用");
 }
 
 void AmountIndicator::reset_diff_storage() {
@@ -235,19 +272,10 @@ bool VolumeIndicator::aggregate(const std::string& target_frequency, std::map<in
     try {
         // 如果目标频率与基础频率相同，直接返回
         if (target_frequency == "15S") {
-            // 从存储中提取数据
-            for (const auto& [stock, holder] : storage_) {
-                if (!holder) continue;
-                
-                GSeries volume_series = holder->get_m_bar("volume");
-                for (int ti = 0; ti < volume_series.get_size(); ++ti) {
-                    double value = volume_series.get(ti);
-                    if (!std::isnan(value)) {
-                        aggregated_data[ti][stock] = value;
-                    }
-                }
-            }
-            return true;
+            // 在新的架构中，数据存储在CalculationEngine的BarSeriesHolder中
+            // 这个方法现在需要从外部传入数据，或者暂时返回false
+            spdlog::warn("VolumeIndicator::aggregate: 新架构中需要从外部获取数据");
+            return false;
         }
         
         // 对于其他频率，暂时返回false（可以根据需要实现）
@@ -265,19 +293,10 @@ bool AmountIndicator::aggregate(const std::string& target_frequency, std::map<in
     try {
         // 如果目标频率与基础频率相同，直接返回
         if (target_frequency == "15S") {
-            // 从存储中提取数据
-            for (const auto& [stock, holder] : storage_) {
-                if (!holder) continue;
-                
-                GSeries amount_series = holder->get_m_bar("amount");
-                for (int ti = 0; ti < amount_series.get_size(); ++ti) {
-                    double value = amount_series.get(ti);
-                    if (!std::isnan(value)) {
-                        aggregated_data[ti][stock] = value;
-                    }
-                }
-            }
-            return true;
+            // 在新的架构中，数据存储在CalculationEngine的BarSeriesHolder中
+            // 这个方法现在需要从外部传入数据，或者暂时返回false
+            spdlog::warn("AmountIndicator::aggregate: 新架构中需要从外部获取数据");
+            return false;
         }
         
         // 对于其他频率，暂时返回false（可以根据需要实现）

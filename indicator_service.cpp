@@ -46,7 +46,7 @@ int main() {
         spdlog::info("开始运行Indicator计算引擎，数据量: {}", all_tick_datas.size());
         
         // 重置所有指标的计算状态和差分存储
-        framework.get_engine().reset_diff_storage();
+        framework.get_engine()->reset_diff_storage();
 
         // 按股票分组处理行情数据
         std::unordered_map<std::string, std::vector<MarketAllField>> stock_data_map;
@@ -62,7 +62,7 @@ int main() {
             indicator_threads.emplace_back([&framework, stock_code = stock, data = stock_data]() {
                 spdlog::info("开始处理股票{}的行情数据，共{}条", stock_code, data.size());
                 for (const auto& tick_data : data) {
-                    framework.get_engine().update(tick_data);
+                    framework.get_engine()->update(tick_data);
                 }
                 spdlog::info("股票{}行情数据处理完成", stock_code);
             });

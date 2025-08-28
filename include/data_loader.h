@@ -54,9 +54,7 @@ public:
     // 返回：从1970-01-01 00:00:00 UTC开始的总纳秒数（uint64_t）
     static uint64_t parse_datetime_ns(const std::string& datetime_str) {
         try {
-            // 添加调试信息
-            spdlog::debug("解析时间戳: {}", datetime_str);
-            
+
             // 分割日期时间部分和纳秒部分（.后的9位）
             size_t dot_pos = datetime_str.find('.');
             if (dot_pos == std::string::npos) {
@@ -116,8 +114,6 @@ public:
             sec_since_epoch -= 8 * 3600;  // 减去8小时得到UTC时间
             
             uint64_t total_ns = sec_since_epoch * 1000000000ULL + ns;  // 秒→纳秒 + 剩余纳秒
-
-            spdlog::debug("时间戳解析结果: {} -> {} ns", datetime_str, total_ns);
 
             return total_ns;
 
@@ -556,7 +552,7 @@ public:
 //            const std::vector<std::string>& current_stock_list,
 //            CalculationEngine& engine
 //    ) {
-//        // 1. 生成历史日期（如T=20240701，T-1=20240628，需考虑交易日历）
+//        // 1. 生成历史日期（如T=20240701.csv，T-1=20240628，需考虑交易日历）
 //        // 实际应用中需结合交易日历计算，此处简化为假设连续日期
 //        std::vector<std::string> hist_dates;
 //        for (int i = 1; i <= pre_days; ++i) {

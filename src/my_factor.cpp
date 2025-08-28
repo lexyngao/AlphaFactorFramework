@@ -1,4 +1,5 @@
 #include "my_factor.h"
+#include "cal_engine.h"  // 新增：包含完整的CalculationEngine定义
 
 // 根据频率获取每日时间桶数量（与data_structures.h中的逻辑保持一致）
 int get_bars_per_day(Frequency frequency) {
@@ -98,6 +99,70 @@ GSeries VolumeFactor::definition(
     return result;
 }
 
+// 新增：支持CalculationEngine的definition函数
+GSeries VolumeFactor::definition_with_cal_engine(
+    const std::shared_ptr<CalculationEngine>& cal_engine,
+    const std::vector<std::string>& sorted_stock_list,
+    int ti
+) {
+    GSeries result;
+    result.resize(sorted_stock_list.size());
+    
+    if (!cal_engine) {
+        spdlog::error("CalculationEngine为空，无法获取数据");
+        return result;
+    }
+    
+    // 获取volume indicator的频率
+    auto volume_indicator = get_indicator_by_name("volume");
+    if (!volume_indicator) {
+        spdlog::error("找不到volume indicator");
+        return result;
+    }
+    
+    Frequency indicator_freq = volume_indicator->frequency();
+    
+    // 使用通用的频率匹配函数计算时间桶映射范围
+    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, indicator_freq, Frequency::F1MIN);
+    
+    spdlog::debug("cal_engine因子计算: ti={}, 映射到{}频率范围: [{}, {}]", ti, static_cast<int>(indicator_freq), start_indicator_index, end_indicator_index);
+    
+    // 从CalculationEngine获取数据
+    for (size_t i = 0; i < sorted_stock_list.size(); ++i) {
+        const std::string& stock = sorted_stock_list[i];
+        double value = NAN;
+        
+        // 获取该股票的BarSeriesHolder
+        auto bar_holder = cal_engine->get_bar_series_holder(stock);
+        if (bar_holder) {
+            // 从BarSeriesHolder获取volume数据
+            GSeries volume_series = bar_holder->get_data(indicator_freq, "volume", 0, end_indicator_index);
+            
+            if (volume_series.get_size() > 0) {
+                // 计算平均值
+                double total_volume = 0.0;
+                int valid_count = 0;
+                
+                for (int j = start_indicator_index; j <= end_indicator_index && j < volume_series.get_size(); ++j) {
+                    double vol = volume_series.get(j);
+                    if (!std::isnan(vol)) {
+                        total_volume += vol;
+                        valid_count++;
+                    }
+                }
+                
+                if (valid_count > 0) {
+                    value = total_volume / valid_count;
+                }
+            }
+        }
+        
+        result.set(i, value);
+    }
+    
+    return result;
+}
+
 
 
 // VolumeFactor的访问器模式实现
@@ -126,17 +191,11 @@ GSeries VolumeFactor::definition_with_accessor(
     // 构建临时的bar_runners用于调用原有逻辑
     std::unordered_map<std::string, BarSeriesHolder*> temp_bar_runners;
     
-    // 从indicator获取数据并构建bar_runners
-    const auto& volume_storage = volume_indicator->get_storage();
-    for (const auto& stock : sorted_stock_list) {
-        auto stock_it = volume_storage.find(stock);
-        if (stock_it != volume_storage.end() && stock_it->second) {
-            temp_bar_runners[stock] = stock_it->second.get();
-        }
-    }
-    
-    // 调用原有的definition方法
-    return definition(temp_bar_runners, sorted_stock_list, ti);
+    // 从CalculationEngine获取数据并构建bar_runners
+    // 注意：这里需要传入CalculationEngine的引用，暂时返回空结果
+    // TODO: 需要重构VolumeFactor::definition方法签名以接受CalculationEngine参数
+    spdlog::warn("VolumeFactor::definition: 需要重构以接受CalculationEngine参数，当前返回空结果");
+    return result;
 }
 
 // 新增：VolumeFactor的时间戳驱动实现
@@ -150,7 +209,7 @@ GSeries VolumeFactor::definition_with_timestamp(
     // 动态获取volume indicator的频率
     auto volume_indicator = get_indicator("volume");
     if (!volume_indicator) {
-        spdlog::error("找不到volume indicator，使用默认1分钟频率");
+        spdlog::error("找不到volume indicator，使用默认5分钟频率");
         return result;
     }
     
@@ -279,6 +338,83 @@ GSeries PriceFactor::definition(
     return result;
 }
 
+// 新增：支持CalculationEngine的definition函数
+GSeries PriceFactor::definition_with_cal_engine(
+    const std::shared_ptr<CalculationEngine>& cal_engine,
+    const std::vector<std::string>& sorted_stock_list,
+    int ti
+) {
+    GSeries result;
+    result.resize(sorted_stock_list.size());
+    
+    if (!cal_engine) {
+        spdlog::error("CalculationEngine为空，无法获取数据");
+        return result;
+    }
+    
+    // 获取amount和volume indicator的频率
+//    const Indicator* amount_indicator = get_indicator_by_name("amount");
+//    const Indicator* volume_indicator = get_indicator_by_name("volume");
+    const Indicator* diff_indicator = get_indicator_by_name("diff_volume_amount");
+
+    if (!diff_indicator) {
+        spdlog::error("找不到diff indicator");
+        return result;
+    }
+
+    // 提取indicator的频率
+    Frequency diff_freq = diff_indicator->frequency();
+
+    
+    // 使用通用的频率匹配函数计算时间桶映射范围
+    auto [start_indicator_index, end_indicator_index] = get_time_bucket_range(ti, diff_freq, Frequency::F5MIN);
+    
+    spdlog::debug("PriceFactor计算: ti={}, 映射到{}频率范围: [{}, {}]", 
+                  ti, static_cast<int>(diff_freq), start_indicator_index, end_indicator_index);
+    
+    // 从CalculationEngine获取数据
+    for (size_t i = 0; i < sorted_stock_list.size(); ++i) {
+        const std::string& stock = sorted_stock_list[i];
+        double value = NAN;
+        
+        // 获取该股票的BarSeriesHolder
+        auto bar_holder = cal_engine->get_bar_series_holder(stock);
+        if (bar_holder) {
+            // 从BarSeriesHolder获取amount和volume数据
+            GSeries amount_series = bar_holder->get_data(diff_freq, "amount", 0, end_indicator_index);
+            GSeries volume_series = bar_holder->get_data(diff_freq, "volume", 0, end_indicator_index);
+            
+            if (amount_series.get_size() > 0 && volume_series.get_size() > 0) {
+                // 计算VWAP
+                double total_amount = 0.0;
+                double total_volume = 0.0;
+                int valid_count = 0;
+                
+                for (int j = start_indicator_index; j <= end_indicator_index && j < amount_series.get_size() && j < volume_series.get_size(); ++j) {
+                    double amount = amount_series.get(j);
+                    double volume = volume_series.get(j);
+                    
+                    if (!std::isnan(amount) && !std::isnan(volume) && volume > 0) {
+                        total_amount += amount;
+                        total_volume += volume;
+                        valid_count++;
+                    }
+                }
+                
+                if (valid_count > 0 && total_volume > 0) {
+                    value = total_amount / total_volume;
+                }
+            }
+        }
+        
+        result.set(i, value);
+    }
+    
+    spdlog::info("PriceFactor计算完成: 股票数量={}, 有效数据={}/{}", 
+                 sorted_stock_list.size(), result.get_valid_num(), result.get_size());
+    return result;
+}
+
 
  
 
@@ -335,7 +471,9 @@ GSeries PriceFactor::definition_with_timestamp_aggregated(
     result.resize(sorted_stock_list.size());
     
     auto diff_indicator = get_indicator("diff_volume_amount");
-    const auto& diff_storage = diff_indicator->get_storage();
+    // TODO: 需要从CalculationEngine获取数据，当前返回空结果
+    spdlog::warn("PriceFactor::definition_with_timestamp: 需要从CalculationEngine获取数据，当前返回空结果");
+    return result;
     
     // 获取聚合参数（使用静态函数）
     int ratio = get_aggregation_ratio("15S", target_frequency);
@@ -356,13 +494,9 @@ GSeries PriceFactor::definition_with_timestamp_aggregated(
         const std::string& stock = sorted_stock_list[i];
         double value = NAN;
         
-        auto stock_it = diff_storage.find(stock);
-        if (stock_it != diff_storage.end() && stock_it->second) {
-            BarSeriesHolder* diff_holder = stock_it->second.get();
-            
-            // 动态聚合计算VWAP
-            value = calculate_aggregated_vwap(diff_holder, end_indicator_index, ratio, target_frequency);
-        }
+        // TODO: 需要从CalculationEngine获取数据，当前返回NAN
+        spdlog::warn("PriceFactor::definition_with_timestamp: 需要从CalculationEngine获取数据，当前返回NAN");
+        value = NAN;
         
         result.set(i, value);
     }
@@ -503,52 +637,12 @@ GSeries PriceFactor::definition_with_timestamp_original(
         double value = NAN;
         
         // 从DiffIndicator的存储中获取数据
-        const auto& diff_storage = diff_indicator->get_storage();
+        // TODO: 需要从CalculationEngine获取数据，当前返回NAN
+        spdlog::warn("PriceFactor::definition_with_timestamp_fused: 需要从CalculationEngine获取数据，当前返回NAN");
+        value = NAN;
         
-        auto stock_it = diff_storage.find(stock);
-        
-        if (stock_it != diff_storage.end() && stock_it->second) {
-            BarSeriesHolder* diff_holder = stock_it->second.get();
-            
-            // 获取融合数据（历史数据 + 当日数据）
-            auto [fused_amount_series, amount_today_start] = IndicatorStorageHelper::get_fused_series_with_today_index(
-                diff_holder, "amount", pre_days, end_index - (pre_days * get_bars_per_day(storage_freq)), storage_freq
-            );
-            
-            auto [fused_volume_series, volume_today_start] = IndicatorStorageHelper::get_fused_series_with_today_index(
-                diff_holder, "volume", pre_days, end_index - (pre_days * get_bars_per_day(storage_freq)), storage_freq
-            );
-            
-            // 计算当日数据在融合数据中的实际索引
-            int today_end_index = end_index - (pre_days * get_bars_per_day(storage_freq));
-            int amount_fused_index = amount_today_start + today_end_index;
-            int volume_fused_index = volume_today_start + today_end_index;
-            
-            spdlog::debug("股票{}: 融合数据索引映射 - 当日结束={}, amount映射={}, volume映射={}", 
-                         stock, today_end_index, amount_fused_index, volume_fused_index);
-            
-            // 检查索引是否在有效范围内
-            if (amount_fused_index >= 0 && amount_fused_index < fused_amount_series.get_size() && 
-                volume_fused_index >= 0 && volume_fused_index < fused_volume_series.get_size()) {
-                
-                double amount_value = fused_amount_series.get(amount_fused_index);
-                double volume_value = fused_volume_series.get(volume_fused_index);
-                
-                if (!std::isnan(amount_value) && !std::isnan(volume_value) && volume_value > 0) {
-                    value = amount_value / volume_value;  // 计算VWAP
-                    spdlog::debug("股票{}: 计算VWAP value={}, amount={}, volume={}", 
-                                 stock, value, amount_value, volume_value);
-                } else {
-                    spdlog::debug("股票{}: 当前时间点数据无效 amount={}, volume={}", stock, amount_value, volume_value);
-                }
-            } else {
-                spdlog::debug("股票{}: 融合数据索引超出范围 amount_index={}/{}, volume_index={}/{}", 
-                             stock, amount_fused_index, fused_amount_series.get_size(), 
-                             volume_fused_index, fused_volume_series.get_size());
-            }
-        } else {
-            spdlog::debug("股票{}: 找不到DiffIndicator的BarSeriesHolder", stock);
-        }
+        // TODO: 需要从CalculationEngine获取数据，当前返回NAN
+        spdlog::warn("PriceFactor::definition_with_timestamp_fused: 需要从CalculationEngine获取数据，当前返回NAN");
         
         result.set(i, value);
     }

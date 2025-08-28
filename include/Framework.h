@@ -16,7 +16,7 @@
 class Framework {
 public:
     Framework(const GlobalConfig& config)
-        : config_(config), engine_(config) {
+        : config_(config), engine_(std::make_shared<CalculationEngine>(config)) {
         stock_list_ = DataLoader().get_stock_list_from_data();
     }
 
@@ -28,16 +28,31 @@ public:
                 // 根据id创建对应的Indicator实例
                 if (module.id == "VolumeIndicator") {
                     indicator = std::make_shared<VolumeIndicator>(module);
+                    // 为VolumeIndicator设置CalculationEngine引用
+                    auto volume_indicator = std::dynamic_pointer_cast<VolumeIndicator>(indicator);
+                    if (volume_indicator) {
+                        volume_indicator->set_calculation_engine(engine_);
+                    }
                 } else if (module.id == "AmountIndicator") {
                     indicator = std::make_shared<AmountIndicator>(module);
+                    // 为AmountIndicator设置CalculationEngine引用
+                    auto amount_indicator = std::dynamic_pointer_cast<AmountIndicator>(indicator);
+                    if (amount_indicator) {
+                        amount_indicator->set_calculation_engine(engine_);
+                    }
                 } else if (module.id == "DiffIndicator") {
-                    indicator = std::make_shared<DiffIndicator>(module);
+                    indicator = std::make_shared<DiffIndicator>(module, config_.pre_days);
+                    // 为DiffIndicator设置CalculationEngine引用，使其能够获取指定股票的BarSeriesHolder
+                    auto diff_indicator = std::dynamic_pointer_cast<DiffIndicator>(indicator);
+                    if (diff_indicator) {
+                        diff_indicator->set_calculation_engine(engine_);
+                    }
                 } else {
                     spdlog::error("未知的Indicator类型: {}", module.id);
                     continue;
                 }
                 
-                engine_.add_indicator(module.name, indicator);
+                engine_->add_indicator(module.name, indicator);
                 indicator_map_[module.name] = indicator;
                 
             } else if (module.handler == "Factor") {
@@ -56,11 +71,11 @@ public:
                 // 注入pre_days配置
                 factor->set_pre_days(config_.pre_days);
                 
-                engine_.add_factor(factor);
+                engine_->add_factor(factor);
                 factor_map_[module.name] = factor;
             }
         }
-        engine_.init_indicator_storage(stock_list_);
+        engine_->init_indicator_storage(stock_list_);
     }
 
     // 新增：注册Indicator到共享存储（供Factor服务使用）
@@ -72,10 +87,25 @@ public:
                 // 根据id创建对应的Indicator实例
                 if (module.id == "VolumeIndicator") {
                     indicator = std::make_shared<VolumeIndicator>(module);
+                    // 为VolumeIndicator设置CalculationEngine引用
+                    auto volume_indicator = std::dynamic_pointer_cast<VolumeIndicator>(indicator);
+                    if (volume_indicator) {
+                        volume_indicator->set_calculation_engine(engine_);
+                    }
                 } else if (module.id == "AmountIndicator") {
                     indicator = std::make_shared<AmountIndicator>(module);
+                    // 为AmountIndicator设置CalculationEngine引用
+                    auto amount_indicator = std::dynamic_pointer_cast<AmountIndicator>(indicator);
+                    if (amount_indicator) {
+                        amount_indicator->set_calculation_engine(engine_);
+                    }
                 } else if (module.id == "DiffIndicator") {
-                    indicator = std::make_shared<DiffIndicator>(module);
+                    indicator = std::make_shared<DiffIndicator>(module, config_.pre_days);
+                    // 为DiffIndicator设置CalculationEngine引用
+                    auto diff_indicator = std::dynamic_pointer_cast<DiffIndicator>(indicator);
+                    if (diff_indicator) {
+                        diff_indicator->set_calculation_engine(engine_);
+                    }
                 } else {
                     spdlog::error("未知的Indicator类型: {}", module.id);
                     continue;
@@ -83,10 +113,11 @@ public:
                 
                 // 加载历史数据到共享存储
                 spdlog::info("加载指标[{}]的历史数据到共享存储", module.name);
-                ResultStorage::load_multi_day_indicators(indicator, module, config_);
+                // 修复：传递cal_engine参数，确保历史数据能加载到BarSeriesHolder中
+                ResultStorage::load_multi_day_indicators(indicator, module, config_, engine_);
                 
                 // 添加到engine的共享存储
-                engine_.add_indicator(module.name, indicator);
+                engine_->add_indicator(module.name, indicator);
                 indicator_map_[module.name] = indicator;
             }
         }
@@ -100,7 +131,8 @@ public:
                 auto it = indicator_map_.find(module.name);
                 if (it != indicator_map_.end()) {
                     spdlog::info("调用load_multi_day_indicators for {}", module.name);
-                    ResultStorage::load_multi_day_indicators(it->second, module, config_);
+                    // 修复：传递cal_engine参数，确保历史数据能加载到BarSeriesHolder中
+                    ResultStorage::load_multi_day_indicators(it->second, module, config_, engine_);
                 } else {
                     spdlog::error("未找到指标: {}", module.name);
                 }
@@ -124,7 +156,7 @@ public:
         
         // 重置所有指标的计算状态和差分存储
 //        engine_.reset_all_indicator_status();
-        engine_.reset_diff_storage();
+        engine_->reset_diff_storage();
 
         // 设置factor依赖关系
         setup_factor_dependencies();
@@ -148,7 +180,7 @@ public:
             indicator_threads.emplace_back([this, stock_code = stock, data = stock_data]() {
                 spdlog::info("开始处理股票{}的行情数据，共{}条", stock_code, data.size());
                 for (const auto& tick_data : data) {
-                    engine_.update(tick_data);
+                    engine_->update(tick_data);
                 }
                 spdlog::info("股票{}行情数据处理完成", stock_code);
 
@@ -164,7 +196,7 @@ public:
 
         // 启动Factor线程组（按时间事件顺序，每个时间事件内按Factor多线程）
         spdlog::info("启动Factor线程组，处理时间事件");
-        engine_.process_factor_time_events(time_points);
+        engine_->process_factor_time_events(time_points);
         
         spdlog::info("引擎运行完成");
     }
@@ -185,9 +217,8 @@ public:
     void save_all_results() {
         spdlog::info("开始保存所有结果...");
         
-        // 添加线程同步，确保所有计算线程完成
-        // 等待引擎完成所有计算
-        engine_.wait_for_completion();
+        // 注意：不再在这里调用wait_for_completion，因为上层已经调用过了
+        // 避免重复等待，提高性能
         
         try {
             for (const auto& module : config_.modules) {
@@ -196,7 +227,8 @@ public:
                         auto it = indicator_map_.find(module.name);
                         if (it != indicator_map_.end() && it->second) {
                             spdlog::info("保存指标: {}", module.name);
-                            if (!ResultStorage::save_indicator(it->second, module, config_.calculate_date)) {
+                            // 修复：传递cal_engine参数，确保能正确保存指标数据
+                            if (!ResultStorage::save_indicator(it->second, module, config_.calculate_date, engine_)) {
                                 spdlog::error("保存指标[{}]失败", module.name);
                             }
                         } else {
@@ -206,7 +238,8 @@ public:
                         auto it = factor_map_.find(module.name);
                         if (it != factor_map_.end() && it->second) {
                             spdlog::info("保存因子: {}", module.name);
-                            if (!ResultStorage::save_factor(it->second, module, config_.calculate_date, stock_list_)) {
+                            // 修复：传递cal_engine参数，确保能正确保存因子数据
+                            if (!ResultStorage::save_factor(it->second, module, config_.calculate_date, stock_list_, engine_)) {
                                 spdlog::error("保存因子[{}]失败", module.name);
                             }
                         } else {
@@ -305,7 +338,7 @@ public:
     }
 
     const std::vector<std::string>& get_stock_list() const { return stock_list_; }
-    CalculationEngine& get_engine() { return engine_; }
+    std::shared_ptr<CalculationEngine> get_engine() { return engine_; }
     const GlobalConfig& get_config() const { return config_; }
     const std::unordered_map<std::string, std::shared_ptr<Indicator>>& get_indicator_map() const { return indicator_map_; }
     const std::unordered_map<std::string, std::shared_ptr<Factor>>& get_factor_map() const { return factor_map_; }
@@ -325,14 +358,14 @@ private:
         // 使用数据加载器的解析函数
         uint64_t timestamp = DataLoader::parse_datetime_ns(datetime_str);
         
-        spdlog::debug("时间转换: {}-{:02d}-{:02d} {:02d}:{:02d}:{:02d} -> {} ns", 
-                     year, month, day, hour, minute, second, timestamp);
+//        spdlog::debug("时间转换: {}-{:02d}-{:02d} {:02d}:{:02d}:{:02d} -> {} ns",
+//                     year, month, day, hour, minute, second, timestamp);
         
         return timestamp;
     }
 
     GlobalConfig config_;
-    CalculationEngine engine_;
+    std::shared_ptr<CalculationEngine> engine_;
     std::vector<std::string> stock_list_;
     std::unordered_map<std::string, std::shared_ptr<Indicator>> indicator_map_;
     std::unordered_map<std::string, std::shared_ptr<Factor>> factor_map_;

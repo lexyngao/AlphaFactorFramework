@@ -52,7 +52,7 @@ elif [ "$1" = "both" ]; then
     
 elif [ "$1" = "shared" ]; then
     echo "启动共享内存服务（推荐）..."
-    ./SharedMemoryService > shared_memory.log 2>&1
+    ./cmake-build-debug/SharedMemoryService > shared_memory.log 2>&1
     SHARED_EXIT_CODE=$?
     
     if [ $SHARED_EXIT_CODE -eq 0 ]; then
